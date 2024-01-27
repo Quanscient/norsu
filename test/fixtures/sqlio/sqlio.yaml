@@ -1,0 +1,21 @@
+openapi: "3.0.3"
+components:
+  schemas:
+    Id:
+      type: object
+      properties:
+        id:
+          type: string
+      required:
+        - id
+
+    NewPerson:
+      type: object
+      properties:
+        id:
+          type: string
+        person:
+          $ref: "../persons/persons.yaml#/components/schemas/NewPerson"
+      required:
+        - id
+        - person

@@ -1,0 +1,22 @@
+openapi: "3.0.3"
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        species:
+          $ref: "#/components/schemas/Species"
+      required:
+        - id
+        - first_name
+        - pets
+
+    Species:
+      type: string
+      enum:
+        - dog
+        - cat

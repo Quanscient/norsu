@@ -1,0 +1,20 @@
+version: 1
+package:
+  path: ./pkg/queries
+queries:
+  - path: ./*.sql
+migrations:
+  - path: ../../fixtures/**/*.sql
+models:
+  - openApi:
+      path: ../../fixtures/sqlio/sqlio.yaml
+    package:
+      path: github.com/koskimas/norsu/test/fixtures/sqlio
+  - openApi:
+      path: ../../fixtures/persons/persons.yaml
+    package:
+      path: github.com/koskimas/norsu/test/fixtures/persons
+  - openApi:
+      path: ../../fixtures/pets/pets.yaml
+    package:
+      path: github.com/koskimas/norsu/test/fixtures/pets
