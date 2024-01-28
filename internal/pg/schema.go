@@ -70,7 +70,7 @@ func createTable(db *DB, stmt *pg_query.CreateStmt) error {
 	}
 
 	table := &Table{
-		Name:          TableName{Name: name, Schema: rel.GetSchemaname()},
+		Name:          &TableName{Name: name, Schema: rel.GetSchemaname()},
 		Columns:       make([]*Column, 0),
 		ColumnsByName: make(map[string]*Column),
 	}
@@ -81,7 +81,7 @@ func createTable(db *DB, stmt *pg_query.CreateStmt) error {
 				return err
 			}
 		} else if like := c.GetTableLikeClause(); like != nil {
-			likeTable := db.TablesByName[Tbl(like.GetRelation().GetRelname())]
+			likeTable := db.TablesByName[NewTableName(like.GetRelation().GetRelname())]
 			if likeTable == nil {
 				return fmt.Errorf(`tried to create a table using like clause with unknown table "%s"`, like.GetRelation().GetRelname())
 			}
@@ -172,12 +172,12 @@ func dropTable(db *DB, stmt *pg_query.DropStmt) error {
 		for _, i := range o.GetList().GetItems() {
 			tableName := i.GetString_().GetSval()
 
-			table := db.TablesByName[Tbl(tableName)]
+			table := db.TablesByName[NewTableName(tableName)]
 			if table == nil {
 				return fmt.Errorf(`unknown table "%s"`, tableName)
 			}
 
-			db.RemoveTable(table.Name)
+			db.RemoveTable(*table.Name)
 		}
 	}
 
@@ -195,7 +195,7 @@ func alterTable(db *DB, stmt *pg_query.AlterTableStmt) error {
 		return errors.New("empty table name")
 	}
 
-	table := db.TablesByName[Tbl(name)]
+	table := db.TablesByName[NewTableName(name)]
 	if table == nil {
 		return fmt.Errorf(`table "%s" hasn't been created`, name)
 	}
@@ -286,7 +286,7 @@ func rename(db *DB, stmt *pg_query.RenameStmt) error {
 		return errors.New("empty table name")
 	}
 
-	table := db.TablesByName[Tbl(tableName)]
+	table := db.TablesByName[NewTableName(tableName)]
 	if table == nil {
 		return fmt.Errorf(`unknown table "%s"`, tableName)
 	}
@@ -299,7 +299,7 @@ func rename(db *DB, stmt *pg_query.RenameStmt) error {
 			table.RenameColumn(stmt.GetSubname(), stmt.GetNewname())
 		}
 	case pg_query.ObjectType_OBJECT_TABLE:
-		db.RenameTable(table.Name, Tbl(stmt.GetNewname()))
+		db.RenameTable(*table.Name, NewTableName(stmt.GetNewname()))
 	default:
 		return fmt.Errorf("unknown rename type %s", stmt.GetRenameType().String())
 	}

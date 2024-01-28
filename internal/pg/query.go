@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/koskimas/norsu/internal/ptr"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
@@ -213,7 +214,7 @@ func addTableFromCTE(ctx *QueryParseContext, cte *pg_query.CommonTableExpr) erro
 		return err
 	}
 
-	t.Name = Tbl(cte.GetCtename())
+	t.Name = NewTableNamePtr(cte.GetCtename())
 	ctx.DB.AddTable(t)
 
 	return nil
@@ -245,7 +246,7 @@ func addTablesFromNode(ctx *QueryParseContext, node *pg_query.Node) error {
 }
 
 func addTablesFromRangeVar(ctx *QueryParseContext, r *pg_query.RangeVar) error {
-	name := Tbl(r.GetRelname(), r.GetSchemaname())
+	name := NewTableName(r.GetRelname(), r.GetSchemaname())
 
 	t := ctx.DB.TablesByName[name]
 	if t == nil {
@@ -255,7 +256,7 @@ func addTablesFromRangeVar(ctx *QueryParseContext, r *pg_query.RangeVar) error {
 	jt := JoinedTable{Table: name, Alias: name}
 
 	if r.GetAlias() != nil {
-		jt.Alias = Tbl(r.GetAlias().GetAliasname())
+		jt.Alias = NewTableName(r.GetAlias().GetAliasname())
 	}
 
 	ctx.JoinedTables = append(ctx.JoinedTables, jt)
@@ -290,9 +291,9 @@ func addTablesFromSubSelectWithSelectClause(ctx *QueryParseContext, subSelect *p
 		return errors.New("subquery must have an alias")
 	}
 
-	t.Name = Tbl(subSelect.GetAlias().GetAliasname())
+	t.Name = NewTableNamePtr(subSelect.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
-	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: t.Name, Alias: t.Name})
+	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
 
 	return nil
 }
@@ -321,9 +322,9 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 		return err
 	}
 
-	t.Name = Tbl(f.GetAlias().GetAliasname())
+	t.Name = NewTableNamePtr(f.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
-	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: t.Name, Alias: t.Name})
+	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
 
 	return nil
 }
@@ -348,8 +349,7 @@ func getRangeFunctionName(rf *pg_query.RangeFunction) (string, error) {
 		return "", errors.New("failed to get range function name: more or less than one name part")
 	}
 
-	fn := fc.GetFuncname()[0]
-	return fn.GetString_().GetSval(), nil
+	return getString(fc.GetFuncname()[0]), nil
 }
 
 func parseColumnDefList(list []*pg_query.Node) (*Table, error) {
@@ -424,18 +424,17 @@ func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (sel *selec
 
 func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*selection, error) {
 	var colName string
-	var tableRef TableName
+	var tableRef *TableName
 
 	f := ref.GetFields()
 	if len(f) == 1 {
 		colName = getColumnNameFromField(f[0])
 	} else if len(f) == 2 {
 		colName = getColumnNameFromField(f[1])
-		tableRef.Name = f[0].GetString_().GetSval()
+		tableRef = ptr.V(NewTableName(getString(f[0])))
 	} else if len(f) == 3 {
 		colName = getColumnNameFromField(f[2])
-		tableRef.Name = f[1].GetString_().GetSval()
-		tableRef.Schema = f[0].GetString_().GetSval()
+		tableRef = ptr.V(NewTableName(getString(f[1]), getString(f[0])))
 	} else {
 		return nil, fmt.Errorf("unexpected number of parts (%d) in a column reference", len(f))
 	}
@@ -444,10 +443,10 @@ func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*
 	for _, jt := range ctx.JoinedTables {
 		table := ctx.DB.TablesByName[jt.Table]
 
-		if tableRef.HasName() {
+		if tableRef != nil {
 			if tableRef.HasSchema() {
 				// If the table reference has a schema, it must match.
-				if tableRef != jt.Alias {
+				if *tableRef != jt.Alias {
 					continue
 				}
 			} else {
@@ -472,7 +471,7 @@ func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*
 	}
 
 	if len(selTable.Columns) == 0 {
-		if tableRef.HasName() {
+		if tableRef != nil {
 			return nil, fmt.Errorf(`unknown column "%s.%s"`, tableRef.String(), colName)
 		} else {
 			return nil, fmt.Errorf(`unknown column "%s"`, colName)
@@ -495,7 +494,7 @@ func getColumnNameFromField(f *pg_query.Node) string {
 		return "*"
 	}
 
-	return f.GetString_().GetSval()
+	return getString(f)
 }
 
 func parseSubQuerySelection(ctx *QueryParseContext, subLink *pg_query.SubLink) (*selection, error) {
@@ -543,7 +542,7 @@ func parseTypeCastSelection(ctx *QueryParseContext, cast *pg_query.TypeCast) (*s
 }
 
 func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
-	funcName := call.GetFuncname()[0].GetString_().GetSval()
+	funcName := getString(call.GetFuncname()[0])
 
 	if funcName == funcJsonAgg || funcName == funcJsonbAgg {
 		if sel, err := parseJsonAggSelection(ctx, call); err != nil {
@@ -557,7 +556,7 @@ func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*s
 }
 
 func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
-	funcName := call.GetFuncname()[0].GetString_().GetSval()
+	funcName := getString(call.GetFuncname()[0])
 
 	dataType := dataTypeJson
 	if funcName == funcJsonbAgg {
@@ -576,8 +575,8 @@ func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*se
 		if len(f) != 1 {
 			return nil, errors.New("argument name should have a single part")
 		}
-		tn := f[0].GetString_().GetSval()
-		t = ctx.DB.TablesByName[Tbl(tn)]
+		tn := getString(f[0])
+		t = ctx.DB.TablesByName[NewTableName(tn)]
 		if t == nil {
 			return nil, fmt.Errorf(`failed to resolve table "%s"`, tn)
 		}
@@ -671,4 +670,8 @@ func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
 	}
 
 	return clone
+}
+
+func getString(node *pg_query.Node) string {
+	return node.GetString_().GetSval()
 }

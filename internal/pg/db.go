@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/koskimas/norsu/internal/ptr"
 )
 
 type DB struct {
@@ -12,14 +14,14 @@ type DB struct {
 }
 
 type Table struct {
-	Name          TableName
+	Name          *TableName
 	Columns       []*Column
 	ColumnsByName map[string]*Column
 }
 
 type TableName struct {
-	Schema string
 	Name   string
+	Schema string
 }
 
 type Column struct {
@@ -49,13 +51,13 @@ func NewTable(name ...TableName) *Table {
 	}
 
 	if len(name) > 0 {
-		t.Name = name[0]
+		t.Name = &name[0]
 	}
 
 	return t
 }
 
-func Tbl(name string, schema ...string) TableName {
+func NewTableName(name string, schema ...string) TableName {
 	var t TableName
 
 	t.Name = name
@@ -64,6 +66,10 @@ func Tbl(name string, schema ...string) TableName {
 	}
 
 	return t
+}
+
+func NewTableNamePtr(name string, schema ...string) *TableName {
+	return ptr.V(NewTableName(name, schema...))
 }
 
 func (db *DB) Clone() *DB {
@@ -80,30 +86,30 @@ func (db *DB) Clone() *DB {
 }
 
 func (db *DB) AddTable(table *Table) {
-	db.TablesByName[table.Name] = table
+	db.TablesByName[*table.Name] = table
 	db.Tables = append(db.Tables, table)
 }
 
 func (db *DB) AddTableToFront(table *Table) {
-	db.TablesByName[table.Name] = table
+	db.TablesByName[*table.Name] = table
 	db.Tables = append([]*Table{table}, db.Tables...)
 }
 
 func (db *DB) RemoveTable(name TableName) {
 	delete(db.TablesByName, name)
-	db.Tables = slices.DeleteFunc(db.Tables, func(t *Table) bool { return t.Name == name })
+	db.Tables = slices.DeleteFunc(db.Tables, func(t *Table) bool { return *t.Name == name })
 }
 
 func (db *DB) RenameTable(name TableName, newName TableName) {
 	t := db.TablesByName[name]
 	delete(db.TablesByName, name)
 
-	t.Name = newName
+	t.Name = &newName
 	db.TablesByName[newName] = t
 }
 
 func (t *Table) HasName() bool {
-	return t.Name.HasName()
+	return t.Name != nil
 }
 
 func (t *Table) AddColumn(col *Column) {
@@ -127,12 +133,12 @@ func (t *Table) RenameColumn(name string, newName string) {
 func (t *Table) String() string {
 	s := strings.Builder{}
 
-	if t.Name.HasSchema() {
-		s.WriteString(t.Name.Schema)
-		s.WriteString(".")
-	}
+	if t.Name != nil {
+		if t.Name.HasSchema() {
+			s.WriteString(t.Name.Schema)
+			s.WriteString(".")
+		}
 
-	if t.Name.HasName() {
 		s.WriteString(t.Name.Name)
 		s.WriteString(" ")
 	}
@@ -164,7 +170,8 @@ func (t *Table) String() string {
 }
 
 func (t *Table) Clone() *Table {
-	clone := NewTable(t.Name)
+	clone := NewTable()
+	clone.Name = t.Name.Clone()
 
 	for _, c := range t.Columns {
 		clone.AddColumn(c.Clone())
@@ -201,6 +208,7 @@ func (d *DataType) Clone() DataType {
 	clone := DataType{
 		Name:    d.Name,
 		NotNull: d.NotNull,
+		IsArray: d.IsArray,
 		Schema:  d.Schema,
 	}
 
@@ -215,8 +223,11 @@ func (n *TableName) HasSchema() bool {
 	return len(n.Schema) != 0
 }
 
-func (n *TableName) HasName() bool {
-	return len(n.Name) != 0
+func (n *TableName) Clone() *TableName {
+	return &TableName{
+		Name:   n.Name,
+		Schema: n.Schema,
+	}
 }
 
 func (n *TableName) String() string {
