@@ -3,7 +3,7 @@ SELECT
   p.*,
   (
     SELECT
-      COALESCE(JSON_AGG(pets), '[]')
+      COALESCE(JSON_AGG(pets ORDER BY id), '[]')
     FROM
     (
       SELECT

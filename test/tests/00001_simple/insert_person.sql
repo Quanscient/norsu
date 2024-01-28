@@ -1,4 +1,4 @@
--- :name InsertPerson :in sqlio.NewPerson :out persons.Person
+-- :name InsertPerson :in sqlio.PersonUpdate :out persons.Person
 INSERT INTO persons (
   id,
   first_name,

@@ -29,10 +29,11 @@ const (
 	idVarInputSuffix  = "In"
 	idVarOutputSuffix = "Out"
 
-	idPropDb         = "db"
-	idInterfaceDb    = "DB"
-	idStructQueries  = "Queries"
-	idFuncNewQueries = "NewQueries"
+	idPropDb           = "db"
+	idInterfaceDb      = "DB"
+	idInterfaceQueries = "Queries"
+	idStructQueries    = "QueriesImpl"
+	idFuncNewQueries   = "NewQueries"
 )
 
 var (
@@ -55,6 +56,7 @@ func GenerateCode(
 ) error {
 	f := jen.NewFile(path.Base(cfg.Package.Path))
 
+	genQueryInterface(f, models, queries)
 	genDbInterface(f)
 	genQueriesStruct(f)
 	genNewQueriesFunc(f)
@@ -67,6 +69,24 @@ func GenerateCode(
 	}
 
 	return writeQueriesToFile(f, cfg, workingDir)
+}
+
+func genQueryInterface(f *jen.File, models map[string]model.Model, queries []pg.Query) {
+	f.Type().Id(idInterfaceQueries).InterfaceFunc(func(g *jen.Group) {
+		for _, q := range queries {
+			im := models[q.In.Model]
+			om := models[q.Out.Model]
+
+			g.Id(q.Name).Params(
+				jen.Id(idParamCtx).Qual("context", "Context"),
+				jen.Id(idParamInput).Qual(im.Package, im.Name),
+			).Params(
+				jen.Index().Qual(om.Package, om.Name),
+				jen.Error(),
+			)
+		}
+	})
+	f.Empty()
 }
 
 func genDbInterface(f *jen.File) {
@@ -93,7 +113,7 @@ func genQueriesStruct(f *jen.File) {
 func genNewQueriesFunc(f *jen.File) {
 	f.Func().Id(idFuncNewQueries).Params(
 		jen.Id(idParamDb).Id(idInterfaceDb),
-	).Op("*").Id(idStructQueries).Block(
+	).Id(idInterfaceQueries).Block(
 		jen.Return(
 			jen.Op("&").Id(idStructQueries).Values(jen.Dict{
 				jen.Id(idPropDb): jen.Id(idParamDb),
@@ -201,6 +221,7 @@ func genReadRowsLoopBody(g *jen.Group, q pg.Query, om model.Model) {
 
 func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
 	g.Var().Id(idVarRow).Id(q.Out.Model)
+	g.Empty()
 	didGen := false
 
 	for _, c := range q.Out.Table.Columns {

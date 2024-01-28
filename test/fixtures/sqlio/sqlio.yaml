@@ -9,13 +9,13 @@ components:
       required:
         - id
 
-    NewPerson:
+    PersonUpdate:
       type: object
       properties:
         id:
           type: string
         person:
-          $ref: "../persons/persons.yaml#/components/schemas/NewPerson"
+          $ref: "../persons/persons.yaml#/components/schemas/PersonUpdate"
       required:
         - id
         - person

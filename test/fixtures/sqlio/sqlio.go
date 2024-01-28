@@ -6,7 +6,7 @@ type Id struct {
 	Id string `json:"id"`
 }
 
-type NewPerson struct {
-	Id     string            `json:"id"`
-	Person persons.NewPerson `json:"person"`
+type PersonUpdate struct {
+	Id     string               `json:"id"`
+	Person persons.PersonUpdate `json:"person"`
 }

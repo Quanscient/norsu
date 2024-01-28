@@ -14,9 +14,9 @@ import (
 const (
 	dataTypeJson  = "json"
 	dataTypeJsonb = "jsonb"
-	funcJsonAgg   = "json_agg"
-	funcJsonbAgg  = "jsonb_agg"
-	funcCoalesce  = "coalesce"
+
+	funcJsonAgg  = "json_agg"
+	funcJsonbAgg = "jsonb_agg"
 )
 
 type Query struct {
@@ -169,6 +169,10 @@ func parseStmt(ctx *QueryParseContext, stmt *pg_query.Node) (*Table, error) {
 		return parseSelectStmt(ctx, n.SelectStmt)
 	case *pg_query.Node_InsertStmt:
 		return parseInsertStmt(ctx, n.InsertStmt)
+	case *pg_query.Node_UpdateStmt:
+		return parseUpdateStmt(ctx, n.UpdateStmt)
+	case *pg_query.Node_DeleteStmt:
+		return parseDeleteStmt(ctx, n.DeleteStmt)
 	}
 
 	return nil, fmt.Errorf(`unhandled statement type "%+T"`, stmt.GetNode())
@@ -191,19 +195,26 @@ func parseSelectStmt(ctx *QueryParseContext, stmt *pg_query.SelectStmt) (*Table,
 		}
 	}
 
-	o := NewTable()
-	for _, t := range stmt.GetTargetList() {
+	return parseTargetList(ctx, stmt.GetTargetList())
+}
+
+func parseTargetList(ctx *QueryParseContext, targets []*pg_query.Node) (*Table, error) {
+	table := NewTable()
+
+	for _, t := range targets {
 		switch n := t.GetNode().(type) {
 		case *pg_query.Node_ResTarget:
-			if s, err := parseSelection(ctx, n.ResTarget); err != nil {
+			if sel, err := parseSelection(ctx, n.ResTarget); err != nil {
 				return nil, err
 			} else {
-				s.ForEachColumn(o.AddColumn)
+				sel.ForEachColumn(table.AddColumn)
 			}
+		default:
+			return nil, fmt.Errorf(`unhandled target "%+T"`, t.GetNode())
 		}
 	}
 
-	return o, nil
+	return table, nil
 }
 
 func addTableFromCTE(ctx *QueryParseContext, cte *pg_query.CommonTableExpr) error {
@@ -587,8 +598,8 @@ func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*se
 }
 
 func parseCoalesceSelection(ctx *QueryParseContext, expr *pg_query.CoalesceExpr) (*selection, error) {
-	if len(expr.GetArgs()) != 2 || expr.GetArgs()[1].GetAConst() == nil {
-		return nil, errors.New("only coalesce expressions with two args (expression and a constant) are supported in selections")
+	if len(expr.GetArgs()) != 2 || expr.GetArgs()[1].GetAConst() == nil || expr.GetArgs()[1].GetAConst().GetIsnull() {
+		return nil, errors.New("only coalesce expressions with two args (expression and a non-null constant) are supported in selections")
 	}
 
 	sel, err := parseSelectionNode(ctx, expr.GetArgs()[0])
@@ -609,7 +620,7 @@ func parseConstantSelection(ctx *QueryParseContext, expr *pg_query.A_Const) (*se
 	sel := &selection{
 		Column: &Column{
 			Type: DataType{
-				NotNull: true,
+				NotNull: !expr.GetIsnull(),
 			},
 		},
 	}
@@ -653,19 +664,57 @@ func parseInsertStmt(ctx *QueryParseContext, stmt *pg_query.InsertStmt) (*Table,
 		}
 	}
 
-	o := NewTable()
-	for _, t := range stmt.GetReturningList() {
-		switch n := t.GetNode().(type) {
-		case *pg_query.Node_ResTarget:
-			if s, err := parseSelection(ctx, n.ResTarget); err != nil {
-				return nil, err
-			} else {
-				s.ForEachColumn(o.AddColumn)
-			}
+	return parseTargetList(ctx, stmt.GetReturningList())
+}
+
+func parseUpdateStmt(ctx *QueryParseContext, stmt *pg_query.UpdateStmt) (*Table, error) {
+	ctx = ctx.CloneForSubquery()
+
+	// Add CTEs as tables to ctx.DB.
+	for _, cte := range stmt.GetWithClause().GetCtes() {
+		if err := addTableFromCTE(ctx, cte.GetCommonTableExpr()); err != nil {
+			return nil, err
 		}
 	}
 
-	return o, nil
+	// Add the update target as a table to ctx.DB and ctx.JoinedTables.
+	if err := addTablesFromRangeVar(ctx, stmt.GetRelation()); err != nil {
+		return nil, err
+	}
+
+	// Add from statements and joins as tables to ctx.DB and to ctx.JoinedTables.
+	for _, f := range stmt.GetFromClause() {
+		if err := addTablesFromNode(ctx, f); err != nil {
+			return nil, err
+		}
+	}
+
+	return parseTargetList(ctx, stmt.GetReturningList())
+}
+
+func parseDeleteStmt(ctx *QueryParseContext, stmt *pg_query.DeleteStmt) (*Table, error) {
+	ctx = ctx.CloneForSubquery()
+
+	// Add CTEs as tables to ctx.DB.
+	for _, cte := range stmt.GetWithClause().GetCtes() {
+		if err := addTableFromCTE(ctx, cte.GetCommonTableExpr()); err != nil {
+			return nil, err
+		}
+	}
+
+	// Add the deletion target as a table to ctx.DB and ctx.JoinedTables.
+	if err := addTablesFromRangeVar(ctx, stmt.GetRelation()); err != nil {
+		return nil, err
+	}
+
+	// Add using statements and joins as tables to ctx.DB and to ctx.JoinedTables.
+	for _, f := range stmt.GetUsingClause() {
+		if err := addTablesFromNode(ctx, f); err != nil {
+			return nil, err
+		}
+	}
+
+	return parseTargetList(ctx, stmt.GetReturningList())
 }
 
 func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
