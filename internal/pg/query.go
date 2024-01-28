@@ -10,6 +10,14 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
+const (
+	dataTypeJson  = "json"
+	dataTypeJsonb = "jsonb"
+	funcJsonAgg   = "json_agg"
+	funcJsonbAgg  = "jsonb_agg"
+	funcCoalesce  = "coalesce"
+)
+
 type Query struct {
 	Name string
 	SQL  string
@@ -384,8 +392,14 @@ func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (sel *selec
 		sel, err = parseSubQuerySelection(ctx, n.SubLink)
 	case *pg_query.Node_TypeCast:
 		sel, err = parseTypeCastSelection(ctx, n.TypeCast)
+	case *pg_query.Node_FuncCall:
+		sel, err = parseFuncCallSelection(ctx, n.FuncCall)
+	case *pg_query.Node_CoalesceExpr:
+		sel, err = parseCoalesceSelection(ctx, n.CoalesceExpr)
 	case *pg_query.Node_AExpr:
 		return nil, fmt.Errorf("expression selections need an explicit type cast")
+	default:
+		err = fmt.Errorf(`unhandled selection type "%+T"`, res.GetVal().GetNode())
 	}
 
 	if err != nil {
@@ -401,10 +415,8 @@ func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (sel *selec
 		sel.Column.Name = res.GetName()
 	}
 
-	if sel.Column != nil {
-		if !sel.Column.HasName() {
-			return nil, errors.New("failed to determine name for selection")
-		}
+	if sel.Column != nil && !sel.Column.HasName() {
+		return nil, errors.New("failed to determine name for selection")
 	}
 
 	return sel, nil
@@ -528,6 +540,80 @@ func parseTypeCastSelection(ctx *QueryParseContext, cast *pg_query.TypeCast) (*s
 	}
 
 	return sel, nil
+}
+
+func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
+	funcName := call.GetFuncname()[0].GetString_().GetSval()
+
+	if funcName == funcJsonAgg || funcName == funcJsonbAgg {
+		if sel, err := parseJsonAggSelection(ctx, call); err != nil {
+			return nil, fmt.Errorf("failed to parse a %s selection: %w", funcName, err)
+		} else {
+			return sel, nil
+		}
+	}
+
+	return nil, fmt.Errorf(`failed to parse function "%s" call selection`, funcName)
+}
+
+func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
+	funcName := call.GetFuncname()[0].GetString_().GetSval()
+
+	dataType := dataTypeJson
+	if funcName == funcJsonbAgg {
+		dataType = dataTypeJsonb
+	}
+
+	args := call.GetArgs()
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expected one argument, got %d", len(args))
+	}
+
+	var t *Table
+	switch n := call.GetArgs()[0].GetNode().(type) {
+	case *pg_query.Node_ColumnRef:
+		f := n.ColumnRef.GetFields()
+		if len(f) != 1 {
+			return nil, errors.New("argument name should have a single part")
+		}
+		tn := f[0].GetString_().GetSval()
+		t = ctx.DB.TablesByName[Tbl(tn)]
+		if t == nil {
+			return nil, fmt.Errorf(`failed to resolve table "%s"`, tn)
+		}
+	default:
+		return nil, fmt.Errorf(`unhandled %s selection type "%+T"`, funcName, call.GetArgs()[0].GetNode())
+	}
+
+	return &selection{
+		Column: &Column{
+			Name: funcName,
+			Type: DataType{
+				Name:     dataType,
+				IsArray:  true,
+				JsonType: t,
+			},
+		},
+	}, nil
+}
+
+func parseCoalesceSelection(ctx *QueryParseContext, expr *pg_query.CoalesceExpr) (*selection, error) {
+	if expr.GetArgs()[0].GetFuncCall() != nil {
+		sel, err := parseFuncCallSelection(ctx, expr.GetArgs()[0].GetFuncCall())
+		if err != nil {
+			return nil, err
+		}
+
+		if sel.Column != nil {
+			// This is not always true. Coalesce might end up returning null if
+			// all expressions are null, but let's simplify things for now.
+			sel.Column.Type.NotNull = true
+		}
+
+		return sel, nil
+	}
+
+	return nil, fmt.Errorf("unhandled coalesce expression selection: %+v", expr)
 }
 
 func parseInsertStmt(ctx *QueryParseContext, stmt *pg_query.InsertStmt) (*Table, error) {
