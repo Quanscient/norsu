@@ -69,12 +69,7 @@ func createTable(db *DB, stmt *pg_query.CreateStmt) error {
 		return errors.New("empty table name")
 	}
 
-	table := &Table{
-		Name:          &TableName{Name: name, Schema: rel.GetSchemaname()},
-		Columns:       make([]*Column, 0),
-		ColumnsByName: make(map[string]*Column),
-	}
-
+	table := NewTable(NewTableName(name, rel.GetSchemaname()))
 	for _, c := range stmt.GetTableElts() {
 		if def := c.GetColumnDef(); def != nil {
 			if err := addColumn(table, def); err != nil {
@@ -144,10 +139,10 @@ func parseTypeName(typeName *pg_query.TypeName) (*DataType, error) {
 	}
 
 	if len(names) == 2 {
-		t.Schema = ptr.V(names[0].GetString_().GetSval())
-		t.Name = names[1].GetString_().GetSval()
+		t.Schema = ptr.V(getString(names[0]))
+		t.Name = getString(names[1])
 	} else if len(names) == 1 {
-		t.Name = names[0].GetString_().GetSval()
+		t.Name = getString(names[0])
 	} else {
 		return nil, fmt.Errorf("a surprising amount of names (%d) in a type name", len(names))
 	}
@@ -170,7 +165,7 @@ func isNotNull(def *pg_query.ColumnDef) bool {
 func dropTable(db *DB, stmt *pg_query.DropStmt) error {
 	for _, o := range stmt.GetObjects() {
 		for _, i := range o.GetList().GetItems() {
-			tableName := i.GetString_().GetSval()
+			tableName := getString(i)
 
 			table := db.TablesByName[NewTableName(tableName)]
 			if table == nil {

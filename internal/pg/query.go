@@ -198,9 +198,7 @@ func parseSelectStmt(ctx *QueryParseContext, stmt *pg_query.SelectStmt) (*Table,
 			if s, err := parseSelection(ctx, n.ResTarget); err != nil {
 				return nil, err
 			} else {
-				s.ForEachColumn(func(c *Column) {
-					o.AddColumn(c)
-				})
+				s.ForEachColumn(o.AddColumn)
 			}
 		}
 	}
@@ -384,30 +382,10 @@ func (s *selection) ForEachColumn(f func(*Column)) {
 	}
 }
 
-func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (sel *selection, err error) {
-	switch n := res.GetVal().GetNode().(type) {
-	case *pg_query.Node_ColumnRef:
-		sel, err = parseColumnRefSelection(ctx, n.ColumnRef)
-	case *pg_query.Node_SubLink:
-		sel, err = parseSubQuerySelection(ctx, n.SubLink)
-	case *pg_query.Node_TypeCast:
-		sel, err = parseTypeCastSelection(ctx, n.TypeCast)
-	case *pg_query.Node_FuncCall:
-		sel, err = parseFuncCallSelection(ctx, n.FuncCall)
-	case *pg_query.Node_CoalesceExpr:
-		sel, err = parseCoalesceSelection(ctx, n.CoalesceExpr)
-	case *pg_query.Node_AExpr:
-		return nil, fmt.Errorf("expression selections need an explicit type cast")
-	default:
-		err = fmt.Errorf(`unhandled selection type "%+T"`, res.GetVal().GetNode())
-	}
-
+func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (*selection, error) {
+	sel, err := parseSelectionNode(ctx, res.GetVal())
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse selection: %w", err)
-	}
-
-	if sel == nil {
-		return nil, errors.New("failed to parse selection")
 	}
 
 	// Handle alias.
@@ -422,19 +400,40 @@ func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (sel *selec
 	return sel, nil
 }
 
+func parseSelectionNode(ctx *QueryParseContext, node *pg_query.Node) (*selection, error) {
+	switch n := node.GetNode().(type) {
+	case *pg_query.Node_ColumnRef:
+		return parseColumnRefSelection(ctx, n.ColumnRef)
+	case *pg_query.Node_SubLink:
+		return parseSubQuerySelection(ctx, n.SubLink)
+	case *pg_query.Node_TypeCast:
+		return parseTypeCastSelection(ctx, n.TypeCast)
+	case *pg_query.Node_FuncCall:
+		return parseFuncCallSelection(ctx, n.FuncCall)
+	case *pg_query.Node_CoalesceExpr:
+		return parseCoalesceSelection(ctx, n.CoalesceExpr)
+	case *pg_query.Node_AConst:
+		return parseConstantSelection(ctx, n.AConst)
+	case *pg_query.Node_AExpr:
+		return nil, fmt.Errorf("expression selections need an explicit type cast")
+	}
+
+	return nil, fmt.Errorf(`unhandled selection "%+T"`, node.GetNode())
+}
+
 func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*selection, error) {
 	var colName string
-	var tableRef *TableName
+	var tableName *TableName
 
 	f := ref.GetFields()
 	if len(f) == 1 {
 		colName = getColumnNameFromField(f[0])
 	} else if len(f) == 2 {
 		colName = getColumnNameFromField(f[1])
-		tableRef = ptr.V(NewTableName(getString(f[0])))
+		tableName = ptr.V(NewTableName(getString(f[0])))
 	} else if len(f) == 3 {
 		colName = getColumnNameFromField(f[2])
-		tableRef = ptr.V(NewTableName(getString(f[1]), getString(f[0])))
+		tableName = ptr.V(NewTableName(getString(f[1]), getString(f[0])))
 	} else {
 		return nil, fmt.Errorf("unexpected number of parts (%d) in a column reference", len(f))
 	}
@@ -443,16 +442,16 @@ func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*
 	for _, jt := range ctx.JoinedTables {
 		table := ctx.DB.TablesByName[jt.Table]
 
-		if tableRef != nil {
-			if tableRef.HasSchema() {
+		if tableName != nil {
+			if tableName.HasSchema() {
 				// If the table reference has a schema, it must match.
-				if *tableRef != jt.Alias {
+				if *tableName != jt.Alias {
 					continue
 				}
 			} else {
 				// If the table reference doesn't have a schema, only
 				// the name needs to match.
-				if tableRef.Name != jt.Alias.Name {
+				if tableName.Name != jt.Alias.Name {
 					continue
 				}
 			}
@@ -471,8 +470,8 @@ func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*
 	}
 
 	if len(selTable.Columns) == 0 {
-		if tableRef != nil {
-			return nil, fmt.Errorf(`unknown column "%s.%s"`, tableRef.String(), colName)
+		if tableName != nil {
+			return nil, fmt.Errorf(`unknown column "%s.%s"`, tableName.String(), colName)
 		} else {
 			return nil, fmt.Errorf(`unknown column "%s"`, colName)
 		}
@@ -513,29 +512,20 @@ func parseSubQuerySelection(ctx *QueryParseContext, subLink *pg_query.SubLink) (
 }
 
 func parseTypeCastSelection(ctx *QueryParseContext, cast *pg_query.TypeCast) (*selection, error) {
+	sel, err := parseSelectionNode(ctx, cast.GetArg())
+	if err != nil {
+		return nil, err
+	}
+
 	dataType, err := parseTypeName(cast.GetTypeName())
 	if err != nil {
 		return nil, err
 	}
 
-	sel := &selection{
-		Column: &Column{
-			Type: *dataType,
-		},
-	}
-
-	switch n := cast.GetArg().GetNode().(type) {
-	case *pg_query.Node_ColumnRef:
-		if refSel, err := parseColumnRefSelection(ctx, n.ColumnRef); err != nil {
-			return nil, err
-		} else if refSel.Column == nil {
-			return nil, errors.New("can't cast a star selection")
-		} else {
-			sel = refSel
-			sel.Column.Type.Name = dataType.Name
-		}
-	case *pg_query.Node_AConst:
-		dataType.NotNull = !n.AConst.GetIsnull()
+	if sel.Column != nil {
+		sel.Column.Type.Name = dataType.Name
+	} else {
+		return nil, errors.New("can't cast a star selection")
 	}
 
 	return sel, nil
@@ -590,29 +580,54 @@ func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*se
 			Type: DataType{
 				Name:     dataType,
 				IsArray:  true,
-				JsonType: t,
+				JsonType: t.Clone(),
 			},
 		},
 	}, nil
 }
 
 func parseCoalesceSelection(ctx *QueryParseContext, expr *pg_query.CoalesceExpr) (*selection, error) {
-	if expr.GetArgs()[0].GetFuncCall() != nil {
-		sel, err := parseFuncCallSelection(ctx, expr.GetArgs()[0].GetFuncCall())
-		if err != nil {
-			return nil, err
-		}
-
-		if sel.Column != nil {
-			// This is not always true. Coalesce might end up returning null if
-			// all expressions are null, but let's simplify things for now.
-			sel.Column.Type.NotNull = true
-		}
-
-		return sel, nil
+	if len(expr.GetArgs()) != 2 || expr.GetArgs()[1].GetAConst() == nil {
+		return nil, errors.New("only coalesce expressions with two args (expression and a constant) are supported in selections")
 	}
 
-	return nil, fmt.Errorf("unhandled coalesce expression selection: %+v", expr)
+	sel, err := parseSelectionNode(ctx, expr.GetArgs()[0])
+	if err != nil {
+		return nil, err
+	}
+
+	if sel.Column != nil {
+		// This is not always true. Coalesce might end up returning null if
+		// all expressions are null, but let's simplify things for now.
+		sel.Column.Type.NotNull = true
+	}
+
+	return sel, nil
+}
+
+func parseConstantSelection(ctx *QueryParseContext, expr *pg_query.A_Const) (*selection, error) {
+	sel := &selection{
+		Column: &Column{
+			Type: DataType{
+				NotNull: true,
+			},
+		},
+	}
+
+	switch expr.GetVal().(type) {
+	case *pg_query.A_Const_Sval:
+		sel.Column.Type.Name = "text"
+	case *pg_query.A_Const_Boolval:
+		sel.Column.Type.Name = "bool"
+	case *pg_query.A_Const_Ival:
+		sel.Column.Type.Name = "int8"
+	case *pg_query.A_Const_Fval:
+		sel.Column.Type.Name = "float8"
+	default:
+		sel.Column.Type.Name = "text"
+	}
+
+	return sel, nil
 }
 
 func parseInsertStmt(ctx *QueryParseContext, stmt *pg_query.InsertStmt) (*Table, error) {
@@ -645,9 +660,7 @@ func parseInsertStmt(ctx *QueryParseContext, stmt *pg_query.InsertStmt) (*Table,
 			if s, err := parseSelection(ctx, n.ResTarget); err != nil {
 				return nil, err
 			} else {
-				s.ForEachColumn(func(c *Column) {
-					o.AddColumn(c)
-				})
+				s.ForEachColumn(o.AddColumn)
 			}
 		}
 	}
@@ -670,8 +683,4 @@ func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
 	}
 
 	return clone
-}
-
-func getString(node *pg_query.Node) string {
-	return node.GetString_().GetSval()
 }
