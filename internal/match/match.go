@@ -1,55 +1,21 @@
 package match
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/koskimas/norsu/internal/model"
 	"github.com/koskimas/norsu/internal/pg"
 )
 
-type MatchType string
+type matchType string
 
 const (
-	MatchTypeColumn MatchType = "column"
-	MatchTypeJson   MatchType = "json"
+	matchTypeColumn matchType = "column"
+	matchTypeJson   matchType = "json"
 )
-
-type SchemaPath struct {
-	Path   []string
-	Schema *model.Schema
-}
-
-func (p *SchemaPath) GoString() string {
-	goProps := make([]string, len(p.Path))
-
-	for i := range p.Path {
-		goProps[i] = ModelPropToGo(p.Path[i])
-	}
-
-	return strings.Join(goProps, ".")
-}
-
-type MatchError struct {
-	Message      string
-	MismatchPath *SchemaPath
-}
-
-func (e *MatchError) Error() string {
-	return e.Message
-}
-
-func matchErrorf(mismatchPath *SchemaPath, format string, args ...any) *MatchError {
-	return &MatchError{
-		Message:      fmt.Sprintf(format, args...),
-		MismatchPath: mismatchPath,
-	}
-}
 
 // DoesTablePopulateModel checks recursively if `table` fully populates `schema`.
 // Returns a `MatchError` in case it doesn't.
 func DoesTablePopulateModel(table pg.Table, schema model.Schema) error {
-	if err := doesTablePopulateModel(MatchTypeColumn, table, schema, &SchemaPath{}); err != nil {
+	if err := doesTablePopulateModel(matchTypeColumn, table, schema, &SchemaPath{}); err != nil {
 		return err
 	}
 
@@ -57,7 +23,7 @@ func DoesTablePopulateModel(table pg.Table, schema model.Schema) error {
 }
 
 func doesTablePopulateModel(
-	aType MatchType,
+	aType matchType,
 	table pg.Table,
 	schema model.Schema,
 	schemaPath *SchemaPath,
@@ -92,7 +58,7 @@ func doesTablePopulateModel(
 			}
 
 			if column.Type.Record != nil {
-				if err := doesTablePopulateModel(MatchTypeJson, *column.Type.Record, *p, schemaPath); err != nil {
+				if err := doesTablePopulateModel(matchTypeJson, *column.Type.Record, *p, schemaPath); err != nil {
 					return err
 				}
 			}
@@ -108,72 +74,18 @@ func doesTablePopulateModel(
 			}
 
 			if column.Type.Record != nil {
-				if err := doesTablePopulateModel(MatchTypeJson, *column.Type.Record, *p.Items, schemaPath); err != nil {
+				if err := doesTablePopulateModel(matchTypeJson, *column.Type.Record, *p.Items, schemaPath); err != nil {
 					return err
 				}
 			}
 		}
+
+		// TODO: Check column types. The conversion rules are based on database/sql package
+		//       and are really complex.
 
 		schemaPath.Path = schemaPath.Path[:len(schemaPath.Path)-1]
 		schemaPath.Schema = nil
 	}
 
 	return nil
-}
-
-func Normalize(aType MatchType, prop string) string {
-	if aType == MatchTypeColumn {
-		return strings.ToLower(strings.ReplaceAll(prop, "_", ""))
-	}
-
-	return strings.ToLower(prop)
-}
-
-func ModelPropToGo(modelProp string) string {
-	return strings.ToUpper(modelProp[0:1]) + modelProp[1:]
-}
-
-func ResolveRef(schema *model.Schema, ref string) (*SchemaPath, error) {
-	path := &SchemaPath{
-		Path: make([]string, 0),
-	}
-
-	if err := resolve(schema, ref, path); err != nil {
-		return nil, fmt.Errorf(`failed to resolve reference "%s": %w`, ref, err)
-	}
-
-	return path, nil
-}
-
-func resolve(schema *model.Schema, ref string, path *SchemaPath) error {
-	dot := strings.IndexByte(ref, '.')
-
-	var refPart string
-	if dot != -1 {
-		refPart = ref[0:dot]
-	} else {
-		refPart = ref
-	}
-
-	normRefPart := Normalize(MatchTypeColumn, refPart)
-
-	for n, p := range schema.Properties {
-		if Normalize(MatchTypeColumn, n) == normRefPart {
-			path.Path = append(path.Path, n)
-
-			if dot != -1 {
-				return resolve(p, ref[dot+1:], path)
-			} else {
-				path.Schema = p
-			}
-
-			return nil
-		}
-	}
-
-	if len(path.Path) > 0 {
-		return fmt.Errorf(`could not resolve property "%s" of object "%s"`, refPart, path.Path[len(path.Path)-1])
-	}
-
-	return fmt.Errorf(`could not resolve property "%s"`, refPart)
 }
