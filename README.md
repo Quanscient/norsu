@@ -1,6 +1,6 @@
 # Norsu
 
-Norsu is a postgres query code generator for golang. It solves a quite narrow problem of writing type-safe SQL queries easily given you've defined your entities in Open API files.
+Norsu is a postgres query code generator for golang. It solves a quite specific problem of writing type-safe SQL queries easily given you've defined your entities in OpenAPI files.
 
 You can write a query like this:
 
@@ -30,7 +30,7 @@ WHERE
 ;
 ```
 
-Norsu will read all your Open API files and determine the schema of `sqlio.Id` and `person.Person` models. It then analyses the query (by parsing it using the actual postgres source code) and makes sure you've selected all columns in the output and used the input correctly. The nested `pets` JSON subquery selection will get unmarshalled into the `.Pets` array of `person.Person` and its selections are checked recursively.
+Norsu will read all your OpenAPI files and determine the schema of `sqlio.Id` and `person.Person` models. It then analyses the query (by parsing it using the actual postgres source code) and makes sure you've selected all columns in the output and used the input correctly. The nested `pets` JSON subquery selection will get unmarshalled into the `.Pets` array of `person.Person` and its selections are checked recursively.
 
 Then Norsu generates a simple function for you to call:
 
