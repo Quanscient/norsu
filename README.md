@@ -5,22 +5,32 @@ Norsu is a postgres query code generator for golang. It solves a quite narrow pr
 You can write a query like this:
 
 ```sql
--- :name InsertPerson :in person.NewPerson :out person.Person
-INSERT INTO persons (
-  id,
-  first_name,
-  last_name
-)
-VALUES (
-  :id,
-  :first_name,
-  :last_name
-)
-RETURNING
-  *
+-- :name FindPersons :in sqlio.Id :out persons.Person
+SELECT
+  p.*,
+  (
+    SELECT
+      COALESCE(JSON_AGG(pets), '[]')
+    FROM
+    (
+      SELECT
+        pets.*
+      FROM
+        pets
+      WHERE
+        pets.owner_id = p.id
+      ORDER BY
+        pets.name
+    ) pets
+  ) pets
+FROM
+  persons p
+WHERE
+  id = :id
+;
 ```
 
-Norsu will read all your Open API files and determine the schema of `person.NewPerson` and `person.Person` models. It then analyses the query (by parsing it using the actual postgres source code) and makes sure you've selected all columns in the output and used the input correctly.
+Norsu will read all your Open API files and determine the schema of `sqlio.Id` and `person.Person` models. It then analyses the query (by parsing it using the actual postgres source code) and makes sure you've selected all columns in the output and used the input correctly. The nested `pets` JSON subquery selection will get unmarshalled into the `.Pets` array of `person.Person` and its selections are checked recursively.
 
 Then Norsu generates a simple function for you to call:
 
