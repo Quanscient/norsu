@@ -10,6 +10,8 @@ SELECT
         pets.*
       FROM
         pets
+      WHERE
+        pets.owner_id = p.id
       ORDER BY
         pets.name
     ) pets

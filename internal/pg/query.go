@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v5"
+	parser "github.com/pganalyze/pg_query_go/v5/parser"
 )
 
 const (
@@ -79,6 +80,11 @@ func ParseQuery(db *DB, sql string) (*Query, error) {
 
 	ast, err := parseSql(sql)
 	if err != nil {
+		var parseError *parser.Error
+		if errors.As(err, &parseError) {
+			parseError.Message = fmt.Sprintf("line %d: %s", resolveLine(sql, parseError.Cursorpos), parseError.Message)
+			return nil, parseError
+		}
 		return nil, err
 	}
 
@@ -641,7 +647,7 @@ func parseJsonSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selec
 	} else if sel.Column != nil && sel.Column.Type.Record != nil {
 		t = sel.Column.Type.Record
 	} else {
-		return nil, fmt.Errorf(`unsupported selection %s`, sel.String())
+		return nil, fmt.Errorf(`unsupported selection of type (%s), expected a table or record`, sel.String())
 	}
 
 	var isArray bool
