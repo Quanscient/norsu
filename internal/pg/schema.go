@@ -134,10 +134,6 @@ func parseTypeName(typeName *pg_query.TypeName) (*DataType, error) {
 	t := &DataType{}
 
 	names := typeName.GetNames()
-	if len(names) == 0 {
-		return nil, errors.New("type name had zero names")
-	}
-
 	if len(names) == 2 {
 		t.Schema = ptr.V(getString(names[0]))
 		t.Name = getString(names[1])
@@ -145,6 +141,11 @@ func parseTypeName(typeName *pg_query.TypeName) (*DataType, error) {
 		t.Name = getString(names[0])
 	} else {
 		return nil, fmt.Errorf("a surprising amount of names (%d) in a type name", len(names))
+	}
+
+	t.Name = strings.ToLower(t.Name)
+	if t.Schema != nil {
+		t.Schema = ptr.V(strings.ToLower(*t.Schema))
 	}
 
 	return t, nil
@@ -266,7 +267,7 @@ func alterColumnType(table *Table, columnName string, def *pg_query.ColumnDef) e
 		return fmt.Errorf(`could not find column "%s" in table "%s"`, columnName, table.Name)
 	}
 
-	col.Type.Name = t.Name
+	col.Type.Name = strings.ToLower(t.Name)
 	return nil
 }
 

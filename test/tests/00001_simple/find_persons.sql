@@ -7,7 +7,9 @@ SELECT
     FROM
     (
       SELECT
-        pets.*
+        pets.id,
+        pets.name,
+        pets.species
       FROM
         pets
       WHERE

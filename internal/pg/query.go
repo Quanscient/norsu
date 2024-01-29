@@ -8,18 +8,22 @@ import (
 	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v5"
-	parser "github.com/pganalyze/pg_query_go/v5/parser"
+	pg_parser "github.com/pganalyze/pg_query_go/v5/parser"
 )
 
 const (
-	dataTypeJson   = "json"
-	dataTypeJsonb  = "jsonb"
-	dataTypeRecord = "record"
+	DataTypeJson   = "json"
+	DataTypeJsonb  = "jsonb"
+	DataTypeRecord = "record"
 
-	funcJsonAgg  = "json_agg"
-	funcJsonbAgg = "jsonb_agg"
-	funcToJson   = "to_json"
-	funcToJsonb  = "to_jsonb"
+	funcJsonAgg          = "json_agg"
+	funcJsonbAgg         = "jsonb_agg"
+	funcToJson           = "to_json"
+	funcToJsonb          = "to_jsonb"
+	funcJsonToRecord     = "json_to_record"
+	funcJsonbToRecord    = "jsonb_to_record"
+	funcJsonToRecordSet  = "json_to_recordset"
+	funcJsonbToRecordSet = "jsonb_to_recordset"
 
 	selectionStar = "*"
 )
@@ -80,12 +84,7 @@ func ParseQuery(db *DB, sql string) (*Query, error) {
 
 	ast, err := parseSql(sql)
 	if err != nil {
-		var parseError *parser.Error
-		if errors.As(err, &parseError) {
-			parseError.Message = fmt.Sprintf("line %d: %s", resolveLine(sql, parseError.Cursorpos), parseError.Message)
-			return nil, parseError
-		}
-		return nil, err
+		return nil, handleParseError(sql, err)
 	}
 
 	if len(ast.GetStmts()) > 1 {
@@ -167,6 +166,17 @@ func parseInputs(sql string, q *Query) (string, error) {
 	}
 
 	return strings.Join(linesOut, "\n"), nil
+}
+
+func handleParseError(sql string, err error) error {
+	var parseError *pg_parser.Error
+	if errors.As(err, &parseError) {
+		// Decorate parse errors with a line number.
+		parseError.Message = fmt.Sprintf("line %d: %s", resolveLine(sql, parseError.Cursorpos), parseError.Message)
+		return parseError
+	}
+
+	return err
 }
 
 func parseStmt(ctx *QueryParseContext, stmt *pg_query.Node) (*Table, error) {
@@ -274,7 +284,7 @@ func addTablesFromRangeVar(ctx *QueryParseContext, r *pg_query.RangeVar) error {
 		jt.Alias = NewTableName(r.GetAlias().GetAliasname())
 	}
 
-	ctx.JoinedTables = append(ctx.JoinedTables, jt)
+	ctx.JoinedTables = prepend(ctx.JoinedTables, jt)
 	return nil
 }
 
@@ -308,7 +318,7 @@ func addTablesFromSubSelectWithSelectClause(ctx *QueryParseContext, subSelect *p
 
 	t.Name = NewTableNamePtr(subSelect.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
-	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
+	ctx.JoinedTables = prepend(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
 
 	return nil
 }
@@ -319,17 +329,16 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 		return err
 	}
 
-	name = strings.ToLower(name)
-	if name != "json_to_record" && name != "json_to_recordset" && name != "jsonb_to_record" && name != "jsonb_to_recordset" {
-		return errors.New("unsupported range function")
+	if name != funcJsonToRecord && name != funcJsonToRecordSet && name != funcJsonbToRecord && name != funcJsonbToRecordSet {
+		return fmt.Errorf(`unsupported range function "%s"`, name)
 	}
 
 	if f.GetAlias() == nil {
-		return errors.New("range function didn't have an alias ")
+		return fmt.Errorf(`range function "%s" didn't have an alias`, name)
 	}
 
 	if len(f.GetColdeflist()) == 0 {
-		return errors.New("range function didn't have column defintions")
+		return fmt.Errorf(`range function "%s" didn't have column defintions`, name)
 	}
 
 	t, err := parseColumnDefList(f.GetColdeflist())
@@ -339,7 +348,7 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 
 	t.Name = NewTableNamePtr(f.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
-	ctx.JoinedTables = append(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
+	ctx.JoinedTables = prepend(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
 
 	return nil
 }
@@ -364,7 +373,7 @@ func getRangeFunctionName(rf *pg_query.RangeFunction) (string, error) {
 		return "", errors.New("failed to get range function name: more or less than one name part")
 	}
 
-	return getString(fc.GetFuncname()[0]), nil
+	return strings.ToLower(getString(fc.GetFuncname()[0])), nil
 }
 
 func parseColumnDefList(list []*pg_query.Node) (*Table, error) {
@@ -505,7 +514,7 @@ func parseColumnRefSelectionOnePart(ctx *QueryParseContext, ref string) (*select
 				Column: &Column{
 					Name: ref,
 					Type: DataType{
-						Name:    dataTypeRecord,
+						Name:    DataTypeRecord,
 						NotNull: true,
 						IsArray: true,
 						Record:  table.Clone(),
@@ -626,9 +635,9 @@ func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*s
 func parseJsonSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
 	funcName := getString(call.GetFuncname()[0])
 
-	dataType := dataTypeJson
+	dataType := DataTypeJson
 	if funcName == funcJsonbAgg || funcName == funcToJsonb {
-		dataType = dataTypeJsonb
+		dataType = DataTypeJsonb
 	}
 
 	args := call.GetArgs()
@@ -800,4 +809,8 @@ func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
 	}
 
 	return clone
+}
+
+func prepend[T any](s []T, i T) []T {
+	return append([]T{i}, s...)
 }

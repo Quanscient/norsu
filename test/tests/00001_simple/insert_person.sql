@@ -1,4 +1,4 @@
--- :name InsertPerson :in sqlio.PersonUpdate :out persons.Person
+-- :name InsertPerson :in sqlio.PersonUpdate :out sqlio.Id
 INSERT INTO persons (
   id,
   first_name,
@@ -13,5 +13,5 @@ INSERT INTO persons (
   :person.address
 )
 RETURNING
-  *
+  id
 ;

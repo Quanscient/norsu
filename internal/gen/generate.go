@@ -9,9 +9,9 @@ import (
 
 	"github.com/dave/jennifer/jen"
 	"github.com/koskimas/norsu/internal/config"
+	"github.com/koskimas/norsu/internal/match"
 	"github.com/koskimas/norsu/internal/model"
 	"github.com/koskimas/norsu/internal/pg"
-	"github.com/koskimas/norsu/internal/ref"
 )
 
 const (
@@ -159,13 +159,13 @@ func genQueryBody(g *jen.Group, q pg.Query, im model.Model, om model.Model) {
 
 func genQueryInputVars(g *jen.Group, q pg.Query, im model.Model) {
 	for _, in := range q.In.Inputs {
-		r, _ := ref.Resolve(im.Schema, in.Ref)
+		r, _ := match.ResolveRef(im.Schema, in.Ref)
 
 		if isObjectOrArray(r.Schema) {
 			// Marshal all object and array inputs into JSON. Create a local
 			// variable for each that we can later pass to the query.
 			g.List(jen.Id(getVarNameForInputRef(r)), jen.Err()).Op(":=").Qual("encoding/json", "Marshal").Call(
-				jen.Id(idParamInput).Dot(ref.ToGo(*r)),
+				jen.Id(idParamInput).Dot(r.GoString()),
 			)
 			genHandleError(g)
 			g.Empty()
@@ -191,13 +191,13 @@ func genQueryInputsParams(g *jen.Group, q pg.Query, im model.Model) {
 	g.Id(getSqlConstName(q))
 
 	for _, in := range q.In.Inputs {
-		r, _ := ref.Resolve(im.Schema, in.Ref)
+		r, _ := match.ResolveRef(im.Schema, in.Ref)
 
 		if isObjectOrArray(r.Schema) {
 			// We've created local variables for all object and array inputs.
 			g.Id(getVarNameForInputRef(r))
 		} else {
-			g.Id(idParamInput).Dot(ref.ToGo(*r))
+			g.Id(idParamInput).Dot(r.GoString())
 		}
 	}
 }
@@ -243,7 +243,7 @@ func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
 	didGen := false
 
 	for _, c := range q.Out.Table.Columns {
-		r, err := ref.Resolve(om.Schema, c.Name)
+		r, err := match.ResolveRef(om.Schema, c.Name)
 		if err != nil {
 			// Just ignore extra columns here.
 			continue
@@ -265,21 +265,21 @@ func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
 
 func genReadRowParams(g *jen.Group, q pg.Query, om model.Model) {
 	for _, c := range q.Out.Table.Columns {
-		r, err := ref.Resolve(om.Schema, c.Name)
+		r, err := match.ResolveRef(om.Schema, c.Name)
 
 		if err != nil {
 			g.Op("&").Qual("database/sql", "NullString").Values()
 		} else if isObjectOrArray(r.Schema) || r.Schema.Nullable {
 			g.Op("&").Id(getVarNameForOutputRef(r))
 		} else {
-			g.Op("&").Id(idVarRow).Dot(ref.ToGo(*r))
+			g.Op("&").Id(idVarRow).Dot(r.GoString())
 		}
 	}
 }
 
 func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 	for _, c := range q.Out.Table.Columns {
-		r, err := ref.Resolve(om.Schema, c.Name)
+		r, err := match.ResolveRef(om.Schema, c.Name)
 		if err != nil {
 			continue
 		}
@@ -292,7 +292,7 @@ func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 				g.If(
 					jen.Err().Op(":=").Qual("encoding/json", "Unmarshal").Call(
 						jen.Id(outputVar),
-						jen.Op("&").Id(idVarRow).Dot(ref.ToGo(*r)),
+						jen.Op("&").Id(idVarRow).Dot(r.GoString()),
 					),
 					jen.Err().Op("!=").Nil(),
 				).Block(
@@ -302,7 +302,7 @@ func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 		} else if r.Schema.Nullable {
 			g.Empty()
 			g.If(jen.Id(outputVar).Dot("Valid")).BlockFunc(func(g *jen.Group) {
-				g.Id(idVarRow).Dot(ref.ToGo(*r)).Op("=").Op("&").Id(outputVar).Dot(getSqlNullTypeProp(*r.Schema))
+				g.Id(idVarRow).Dot(r.GoString()).Op("=").Op("&").Id(outputVar).Dot(getSqlNullTypeProp(*r.Schema))
 			})
 		}
 	}
@@ -333,15 +333,15 @@ func isObjectOrArray(schema *model.Schema) bool {
 	return schema.Type == model.TypeObject || schema.Type == model.TypeArray
 }
 
-func getVarNameForInputRef(r *ref.SchemaPath) string {
+func getVarNameForInputRef(r *match.SchemaPath) string {
 	return getVarNameForRef(r, idVarInputSuffix)
 }
 
-func getVarNameForOutputRef(r *ref.SchemaPath) string {
+func getVarNameForOutputRef(r *match.SchemaPath) string {
 	return getVarNameForRef(r, idVarOutputSuffix)
 }
 
-func getVarNameForRef(r *ref.SchemaPath, suffix string) string {
+func getVarNameForRef(r *match.SchemaPath, suffix string) string {
 	name := r.Path[0]
 
 	for _, p := range r.Path[1:] {

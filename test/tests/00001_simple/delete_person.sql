@@ -1,8 +1,8 @@
--- :name DeletePerson :in sqlio.PersonUpdate :out persons.Person
+-- :name DeletePerson :in sqlio.PersonUpdate :out sqlio.Id
 DELETE FROM
   persons
 WHERE
   id = :id
 RETURNING
-  persons.*
+  id
 ;

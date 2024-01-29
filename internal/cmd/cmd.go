@@ -9,6 +9,7 @@ import (
 	"github.com/koskimas/norsu/internal/config"
 	"github.com/koskimas/norsu/internal/gen"
 	"github.com/koskimas/norsu/internal/maps"
+	"github.com/koskimas/norsu/internal/match"
 	"github.com/koskimas/norsu/internal/model"
 	"github.com/koskimas/norsu/internal/model/openapi"
 	"github.com/koskimas/norsu/internal/pg"
@@ -39,6 +40,14 @@ func Run(s Settings) error {
 	queries, err := parseQueries(s, *config, db)
 	if err != nil {
 		return err
+	}
+
+	for _, q := range queries {
+		om := models[q.Out.Model]
+
+		if err := match.DoesTablePopulateModel(*q.Out.Table, *om.Schema); err != nil {
+			return fmt.Errorf("in query %s: %w", q.Name, err)
+		}
 	}
 
 	return gen.GenerateCode(*config, s.WorkingDir, models, queries)
