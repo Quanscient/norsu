@@ -30,11 +30,13 @@ type Column struct {
 }
 
 type DataType struct {
-	Name     string
-	NotNull  bool
-	IsArray  bool
-	Schema   *string
-	JsonType *Table
+	Name    string
+	NotNull bool
+	IsArray bool
+	Schema  *string
+	// Record holds the nested record type in case of a record,
+	// json or jsonb type.
+	Record *Table
 }
 
 func NewDB() *DB {
@@ -130,42 +132,33 @@ func (t *Table) RenameColumn(name string, newName string) {
 	t.ColumnsByName[newName] = c
 }
 
-func (t *Table) String() string {
-	s := strings.Builder{}
-
-	if t.Name != nil {
-		if t.Name.HasSchema() {
-			s.WriteString(t.Name.Schema)
-			s.WriteString(".")
-		}
-
-		s.WriteString(t.Name.Name)
+func (t *Table) writeString(s *stringBuilder, omitName bool) {
+	if t.Name != nil && !omitName {
+		t.Name.string(s)
 		s.WriteString(" ")
 	}
 
-	s.WriteString("(\n")
+	s.WriteString("(")
+	s.WriteNewLine()
+	s.Indent()
 
 	for i, c := range t.Columns {
-		s.WriteString("    ")
-		s.WriteString(c.Name)
-		s.WriteString(" ")
-		if c.Type.Schema != nil {
-			s.WriteString(*c.Type.Schema)
-			s.WriteString(".")
-		}
-		s.WriteString(c.Type.Name)
-		if c.Type.NotNull {
-			s.WriteString(" not null")
-		}
+		c.writeString(s)
 
 		if i != len(t.Columns)-1 {
 			s.WriteString(",")
 		}
 
-		s.WriteString("\n")
+		s.WriteNewLine()
 	}
 
+	s.DeIndent()
 	s.WriteString(")")
+}
+
+func (t *Table) String() string {
+	var s stringBuilder
+	t.writeString(&s, false)
 	return s.String()
 }
 
@@ -191,16 +184,42 @@ func (c *Column) Clone() *Column {
 	}
 }
 
-func (d *DataType) String() string {
-	s := strings.Builder{}
+func (c *Column) writeString(s *stringBuilder) {
+	if c.HasName() {
+		s.WriteString(c.Name)
+		s.WriteString(" ")
+	}
+
+	c.Type.writeString(s)
+}
+
+func (c *Column) String() string {
+	var s stringBuilder
+	c.writeString(&s)
+	return s.String()
+}
+
+func (d *DataType) writeString(s *stringBuilder) {
 	if d.Schema != nil {
 		s.WriteString(*d.Schema)
 		s.WriteByte('.')
 	}
+
 	s.WriteString(d.Name)
+
 	if d.NotNull {
-		s.WriteString(" NOT NULL")
+		s.WriteString(" not null")
 	}
+
+	if d.Record != nil {
+		s.WriteString(" ")
+		d.Record.writeString(s, true)
+	}
+}
+
+func (d *DataType) String() string {
+	var s stringBuilder
+	d.writeString(&s)
 	return s.String()
 }
 
@@ -212,8 +231,8 @@ func (d *DataType) Clone() DataType {
 		Schema:  d.Schema,
 	}
 
-	if d.JsonType != nil {
-		clone.JsonType = d.JsonType.Clone()
+	if d.Record != nil {
+		clone.Record = d.Record.Clone()
 	}
 
 	return clone
@@ -230,14 +249,64 @@ func (n *TableName) Clone() *TableName {
 	}
 }
 
-func (n *TableName) String() string {
+func (n *TableName) string(s *stringBuilder) {
 	if n.HasSchema() {
-		return fmt.Sprintf("%s.%s", n.Schema, n.Name)
+		s.WriteString(n.Schema)
+		s.WriteByte('.')
 	}
 
-	return n.Name
+	s.WriteString(n.Name)
+}
+
+func (n *TableName) String() string {
+	var s stringBuilder
+	n.string(&s)
+	return s.String()
 }
 
 func PRINT(x any) {
 	fmt.Printf("%+v\n\n", x)
+}
+
+type stringBuilder struct {
+	strings.Builder
+	newLine bool
+	indent  int
+}
+
+func (s *stringBuilder) Indent() {
+	s.indent += 1
+}
+
+func (s *stringBuilder) DeIndent() {
+	s.indent -= 1
+}
+
+func (s *stringBuilder) WriteNewLine() {
+	_ = s.Builder.WriteByte('\n')
+	s.newLine = true
+}
+
+func (s *stringBuilder) WriteString(str string) {
+	s.checkNewline()
+	_, _ = s.Builder.WriteString(str)
+}
+
+func (s *stringBuilder) WriteByte(b byte) {
+	s.checkNewline()
+	_ = s.Builder.WriteByte(b)
+}
+
+func (s *stringBuilder) WriteRune(r rune) {
+	s.checkNewline()
+	_, _ = s.Builder.WriteRune(r)
+}
+
+func (s *stringBuilder) checkNewline() {
+	if s.newLine {
+		s.newLine = false
+		for i := 0; i < s.indent; i += 1 {
+			_, _ = s.Builder.WriteString("  ")
+		}
+	}
 }

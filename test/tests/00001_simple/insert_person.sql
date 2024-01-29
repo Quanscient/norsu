@@ -11,5 +11,7 @@ INSERT INTO persons (
   :person.lastName,
   :person.age,
   :person.address
-) RETURNING *
+)
+RETURNING
+  *
 ;

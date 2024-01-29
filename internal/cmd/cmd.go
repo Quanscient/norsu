@@ -136,7 +136,7 @@ func parseQueries(s Settings, cfg config.Config, db *pg.DB) ([]pg.Query, error) 
 
 			q, err := pg.ParseQuery(db, string(sql))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf(`failed to parse file "%s": %w`, f, err)
 			}
 
 			queries = append(queries, *q)

@@ -99,6 +99,14 @@ func genDbInterface(f *jen.File) {
 			jen.Op("*").Qual("database/sql", "Rows"),
 			jen.Error(),
 		),
+		jen.Id("ExecContext").Params(
+			jen.Id(idParamCtx).Qual("context", "Context"),
+			jen.Id(idParamQuery).String(),
+			jen.Id(idParamArgs).Op("...").Id("any"),
+		).Params(
+			jen.Qual("database/sql", "Result"),
+			jen.Error(),
+		),
 	)
 	f.Empty()
 }
@@ -199,17 +207,27 @@ func genReadRows(g *jen.Group, q pg.Query, om model.Model) {
 	g.For(jen.Id(idVarRows).Dot("Next").Call()).BlockFunc(func(g *jen.Group) {
 		genReadRowsLoopBody(g, q, om)
 	})
+
+	g.Empty()
+	g.If(jen.Err().Op(":=").Id(idVarRows).Dot("Err").Call(), jen.Err().Op("!=").Nil()).Block(
+		jen.Return(jen.Nil(), jen.Err()),
+	)
+
 	g.Empty()
 }
 
 func genReadRowsLoopBody(g *jen.Group, q pg.Query, om model.Model) {
 	genQueryRowOutputVars(g, q, om)
 
-	g.Err().Op(":=").Id(idVarRows).Dot("Scan").CallFunc(func(g *jen.Group) {
-		genReadRowParams(g, q, om)
-	})
+	g.If(
+		jen.Err().Op(":=").Id(idVarRows).Dot("Scan").CallFunc(func(g *jen.Group) {
+			genReadRowParams(g, q, om)
+		}),
+		jen.Err().Op("!=").Nil(),
+	).Block(
+		jen.Return(jen.Nil(), jen.Err()),
+	)
 
-	genHandleError(g)
 	genAssignOutput(g, q, om)
 
 	g.Empty()
@@ -271,11 +289,15 @@ func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 			g.Empty()
 			// Unmarshal objects and arrays into the row object.
 			g.If(jen.Id(outputVar).Op("!=").Nil()).BlockFunc(func(g *jen.Group) {
-				g.Err().Op(":=").Qual("encoding/json", "Unmarshal").Call(
-					jen.Id(outputVar),
-					jen.Op("&").Id(idVarRow).Dot(ref.ToGo(*r)),
+				g.If(
+					jen.Err().Op(":=").Qual("encoding/json", "Unmarshal").Call(
+						jen.Id(outputVar),
+						jen.Op("&").Id(idVarRow).Dot(ref.ToGo(*r)),
+					),
+					jen.Err().Op("!=").Nil(),
+				).Block(
+					jen.Return(jen.Nil(), jen.Err()),
 				)
-				genHandleError(g)
 			})
 		} else if r.Schema.Nullable {
 			g.Empty()

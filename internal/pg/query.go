@@ -7,16 +7,20 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/koskimas/norsu/internal/ptr"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
 const (
-	dataTypeJson  = "json"
-	dataTypeJsonb = "jsonb"
+	dataTypeJson   = "json"
+	dataTypeJsonb  = "jsonb"
+	dataTypeRecord = "record"
 
 	funcJsonAgg  = "json_agg"
 	funcJsonbAgg = "jsonb_agg"
+	funcToJson   = "to_json"
+	funcToJsonb  = "to_jsonb"
+
+	selectionStar = "*"
 )
 
 type Query struct {
@@ -109,13 +113,9 @@ func parseHeader(sql string, q *Query) error {
 			if f == ":name" {
 				q.Name = fields[i+1]
 			} else if f == ":in" {
-				q.In = &QueryInput{
-					Model: fields[i+1],
-				}
+				q.In = &QueryInput{Model: fields[i+1]}
 			} else if f == ":out" {
-				q.Out = &QueryOutput{
-					Model: fields[i+1],
-				}
+				q.Out = &QueryOutput{Model: fields[i+1]}
 			}
 		}
 
@@ -383,6 +383,14 @@ type selection struct {
 	Table  *Table
 }
 
+func (s *selection) String() string {
+	if s.Column != nil {
+		return s.Column.String()
+	}
+
+	return s.Table.String()
+}
+
 func (s *selection) ForEachColumn(f func(*Column)) {
 	if s.Column != nil {
 		f(s.Column)
@@ -433,75 +441,128 @@ func parseSelectionNode(ctx *QueryParseContext, node *pg_query.Node) (*selection
 }
 
 func parseColumnRefSelection(ctx *QueryParseContext, ref *pg_query.ColumnRef) (*selection, error) {
-	var colName string
-	var tableName *TableName
-
-	f := ref.GetFields()
-	if len(f) == 1 {
-		colName = getColumnNameFromField(f[0])
-	} else if len(f) == 2 {
-		colName = getColumnNameFromField(f[1])
-		tableName = ptr.V(NewTableName(getString(f[0])))
-	} else if len(f) == 3 {
-		colName = getColumnNameFromField(f[2])
-		tableName = ptr.V(NewTableName(getString(f[1]), getString(f[0])))
-	} else {
-		return nil, fmt.Errorf("unexpected number of parts (%d) in a column reference", len(f))
+	parts := make([]string, len(ref.GetFields()))
+	for i, f := range ref.GetFields() {
+		parts[i] = columnRefPartToString(f)
 	}
 
-	selTable := NewTable()
+	switch len(parts) {
+	case 1:
+		return parseColumnRefSelectionOnePart(ctx, parts[0])
+	case 2:
+		return parseColumnRefSelectionTwoParts(ctx, parts[0], parts[1])
+	case 3:
+		return parseColumnRefSelectionThreeParts(ctx, parts[0], parts[1], parts[2])
+	}
+
+	return nil, fmt.Errorf(`unexpected number of parts (%d) in a column reference "%s"`, len(parts), strings.Join(parts, "."))
+}
+
+func parseColumnRefSelectionOnePart(ctx *QueryParseContext, ref string) (*selection, error) {
+	// Star selection.
+	if ref == selectionStar {
+		allColumns := NewTable()
+
+		for _, jt := range ctx.JoinedTables {
+			if jt.SubQueryDepth == 0 {
+				table := ctx.DB.TablesByName[jt.Table]
+
+				for _, c := range table.Columns {
+					if _, ok := allColumns.ColumnsByName[c.Name]; !ok {
+						allColumns.AddColumn(c.Clone())
+					}
+				}
+			}
+		}
+
+		return &selection{Table: allColumns}, nil
+	}
+
+	// Check for single column selection.
 	for _, jt := range ctx.JoinedTables {
 		table := ctx.DB.TablesByName[jt.Table]
 
-		if tableName != nil {
-			if tableName.HasSchema() {
-				// If the table reference has a schema, it must match.
-				if *tableName != jt.Alias {
-					continue
-				}
-			} else {
-				// If the table reference doesn't have a schema, only
-				// the name needs to match.
-				if tableName.Name != jt.Alias.Name {
-					continue
-				}
-			}
-		}
-
-		if colName == "*" && jt.SubQueryDepth == 0 {
-			for _, tc := range table.Columns {
-				if _, ok := selTable.ColumnsByName[tc.Name]; !ok {
-					selTable.AddColumn(tc.Clone())
-				}
-			}
-		} else if tc := table.ColumnsByName[colName]; tc != nil {
-			selTable.AddColumn(tc.Clone())
-			break
+		if c, ok := table.ColumnsByName[ref]; ok {
+			return &selection{Column: c.Clone()}, nil
 		}
 	}
 
-	if len(selTable.Columns) == 0 {
-		if tableName != nil {
-			return nil, fmt.Errorf(`unknown column "%s.%s"`, tableName.String(), colName)
-		} else {
-			return nil, fmt.Errorf(`unknown column "%s"`, colName)
+	// If we got here, check for a table selection.
+	for _, jt := range ctx.JoinedTables {
+		if jt.Alias.Name == ref {
+			table := ctx.DB.TablesByName[jt.Table]
+
+			// If a table is selected using a table name, it results in a
+			// record selection. The record's underlyin type is the table's
+			// type.
+			return &selection{
+				Column: &Column{
+					Name: ref,
+					Type: DataType{
+						Name:    dataTypeRecord,
+						NotNull: true,
+						IsArray: true,
+						Record:  table.Clone(),
+					},
+				},
+			}, nil
 		}
 	}
 
-	if colName == "*" {
-		return &selection{
-			Table: selTable,
-		}, nil
-	}
-
-	return &selection{
-		Column: selTable.Columns[0],
-	}, nil
+	return nil, fmt.Errorf(`failed to resolve column reference "%s"`, ref)
 }
 
-func getColumnNameFromField(f *pg_query.Node) string {
+func parseColumnRefSelectionTwoParts(ctx *QueryParseContext, ref1 string, ref2 string) (*selection, error) {
+	if ref2 == selectionStar {
+		for _, jt := range ctx.JoinedTables {
+			if jt.Alias.Name == ref1 && jt.SubQueryDepth == 0 {
+				table := ctx.DB.TablesByName[jt.Table]
+				return &selection{Table: table.Clone()}, nil
+			}
+		}
+	} else {
+		for _, jt := range ctx.JoinedTables {
+			if jt.Alias.Name == ref1 {
+				table := ctx.DB.TablesByName[jt.Table]
+
+				if c, ok := table.ColumnsByName[ref2]; ok {
+					return &selection{Column: c.Clone()}, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf(`failed to resolve column reference "%s.%s"`, ref1, ref2)
+}
+
+func parseColumnRefSelectionThreeParts(ctx *QueryParseContext, ref1 string, ref2 string, ref3 string) (*selection, error) {
+	tableRef := NewTableName(ref2, ref1)
+
+	if ref3 == selectionStar {
+		for _, jt := range ctx.JoinedTables {
+			if jt.Alias == tableRef && jt.SubQueryDepth == 0 {
+				table := ctx.DB.TablesByName[jt.Table]
+				return &selection{Table: table.Clone()}, nil
+			}
+		}
+	} else {
+		for _, jt := range ctx.JoinedTables {
+			if jt.Alias == tableRef {
+				table := ctx.DB.TablesByName[jt.Table]
+
+				if c, ok := table.ColumnsByName[ref3]; ok {
+					return &selection{Column: c.Clone()}, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf(`failed to resolve column reference "%s.%s.%s"`, ref1, ref2, ref3)
+}
+
+func columnRefPartToString(f *pg_query.Node) string {
 	if f.GetAStar() != nil {
-		return "*"
+		return selectionStar
 	}
 
 	return getString(f)
@@ -545,8 +606,8 @@ func parseTypeCastSelection(ctx *QueryParseContext, cast *pg_query.TypeCast) (*s
 func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
 	funcName := getString(call.GetFuncname()[0])
 
-	if funcName == funcJsonAgg || funcName == funcJsonbAgg {
-		if sel, err := parseJsonAggSelection(ctx, call); err != nil {
+	if funcName == funcJsonAgg || funcName == funcJsonbAgg || funcName == funcToJson || funcName == funcToJsonb {
+		if sel, err := parseJsonSelection(ctx, call); err != nil {
 			return nil, fmt.Errorf("failed to parse a %s selection: %w", funcName, err)
 		} else {
 			return sel, nil
@@ -556,11 +617,11 @@ func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*s
 	return nil, fmt.Errorf(`failed to parse function "%s" call selection`, funcName)
 }
 
-func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
+func parseJsonSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
 	funcName := getString(call.GetFuncname()[0])
 
 	dataType := dataTypeJson
-	if funcName == funcJsonbAgg {
+	if funcName == funcJsonbAgg || funcName == funcToJsonb {
 		dataType = dataTypeJsonb
 	}
 
@@ -569,29 +630,32 @@ func parseJsonAggSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*se
 		return nil, fmt.Errorf("expected one argument, got %d", len(args))
 	}
 
+	sel, err := parseSelectionNode(ctx, call.GetArgs()[0])
+	if err != nil {
+		return nil, err
+	}
+
 	var t *Table
-	switch n := call.GetArgs()[0].GetNode().(type) {
-	case *pg_query.Node_ColumnRef:
-		f := n.ColumnRef.GetFields()
-		if len(f) != 1 {
-			return nil, errors.New("argument name should have a single part")
-		}
-		tn := getString(f[0])
-		t = ctx.DB.TablesByName[NewTableName(tn)]
-		if t == nil {
-			return nil, fmt.Errorf(`failed to resolve table "%s"`, tn)
-		}
-	default:
-		return nil, fmt.Errorf(`unhandled %s selection type "%+T"`, funcName, call.GetArgs()[0].GetNode())
+	if sel.Table != nil {
+		t = sel.Table
+	} else if sel.Column != nil && sel.Column.Type.Record != nil {
+		t = sel.Column.Type.Record
+	} else {
+		return nil, fmt.Errorf(`unsupported selection %s`, sel.String())
+	}
+
+	var isArray bool
+	if funcName == funcJsonAgg || funcName == funcJsonbAgg {
+		isArray = true
 	}
 
 	return &selection{
 		Column: &Column{
 			Name: funcName,
 			Type: DataType{
-				Name:     dataType,
-				IsArray:  true,
-				JsonType: t.Clone(),
+				Name:    dataType,
+				IsArray: isArray,
+				Record:  t.Clone(),
 			},
 		},
 	}, nil
@@ -608,8 +672,6 @@ func parseCoalesceSelection(ctx *QueryParseContext, expr *pg_query.CoalesceExpr)
 	}
 
 	if sel.Column != nil {
-		// This is not always true. Coalesce might end up returning null if
-		// all expressions are null, but let's simplify things for now.
 		sel.Column.Type.NotNull = true
 	}
 

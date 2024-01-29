@@ -8,5 +8,13 @@ SET
 WHERE
   id = :id
 RETURNING
-  persons.*
+  persons.*,
+  (
+    SELECT
+      JSON_AGG(pets ORDER BY name)
+    FROM
+      pets
+    WHERE
+      pets.owner_id = persons.id
+  ) pets
 ;
