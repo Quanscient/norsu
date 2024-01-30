@@ -27,7 +27,7 @@ func Run(s Settings) error {
 		return err
 	}
 
-	db, err := migrate(s, config)
+	db, err := parseMigrations(s, *config)
 	if err != nil {
 		return err
 	}
@@ -42,28 +42,14 @@ func Run(s Settings) error {
 		return err
 	}
 
-	for _, q := range queries {
-		if q.In != nil {
-			im := models[q.In.Model]
-
-			if err := match.Input(*q.In, *im.Schema); err != nil {
-				return fmt.Errorf("query %s: %w", q.Name, err)
-			}
-		}
-
-		if q.Out != nil {
-			om := models[q.Out.Model]
-
-			if err := match.Output(*q.Out, *om.Schema); err != nil {
-				return fmt.Errorf("query %s: %w", q.Name, err)
-			}
-		}
+	if err := matchModelsAndQueries(models, queries); err != nil {
+		return err
 	}
 
 	return gen.GenerateCode(*config, s.WorkingDir, models, queries)
 }
 
-func migrate(s Settings, config *config.Config) (*pg.DB, error) {
+func parseMigrations(s Settings, config config.Config) (*pg.DB, error) {
 	db := pg.NewDB()
 
 	for _, m := range config.Migrations {
@@ -74,8 +60,13 @@ func migrate(s Settings, config *config.Config) (*pg.DB, error) {
 			return nil, fmt.Errorf(`failed to resolve migration files using glob "%s": %w`, m.Path, err)
 		}
 
-		for _, mf := range files {
-			if err := pg.MigrateFile(db, mf); err != nil {
+		for _, f := range files {
+			sql, err := os.ReadFile(f)
+			if err != nil {
+				return nil, fmt.Errorf(`failed to read migration file "%s": %w`, f, err)
+			}
+
+			if err := pg.ParseMigration(db, string(sql)); err != nil {
 				return nil, err
 			}
 		}
@@ -150,7 +141,7 @@ func parseQueries(s Settings, cfg config.Config, db *pg.DB) ([]pg.Query, error) 
 		for _, f := range files {
 			sql, err := os.ReadFile(f)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf(`failed to read query file "%s": %w`, f, err)
 			}
 
 			q, err := pg.ParseQuery(db, string(sql))
@@ -163,4 +154,26 @@ func parseQueries(s Settings, cfg config.Config, db *pg.DB) ([]pg.Query, error) 
 	}
 
 	return queries, nil
+}
+
+func matchModelsAndQueries(models map[string]model.Model, queries []pg.Query) error {
+	for _, q := range queries {
+		if q.In != nil {
+			im := models[q.In.Model]
+
+			if err := match.Input(*q.In, *im.Schema); err != nil {
+				return fmt.Errorf("query %s: %w", q.Name, err)
+			}
+		}
+
+		if q.Out != nil {
+			om := models[q.Out.Model]
+
+			if err := match.Output(*q.Out, *om.Schema); err != nil {
+				return fmt.Errorf("query %s: %w", q.Name, err)
+			}
+		}
+	}
+
+	return nil
 }

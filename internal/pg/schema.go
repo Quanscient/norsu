@@ -3,14 +3,13 @@ package pg
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/koskimas/norsu/internal/ptr"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func Migrate(db *DB, sql string) error {
+func ParseMigration(db *DB, sql string) error {
 	upMigration, err := omitDownMigration(sql)
 	if err != nil {
 		return fmt.Errorf(`failed to omit down migration: %w`, err)
@@ -40,19 +39,6 @@ func Migrate(db *DB, sql string) error {
 				return fmt.Errorf(`failed to parse a rename statement: %w`, err)
 			}
 		}
-	}
-
-	return nil
-}
-
-func MigrateFile(db *DB, filePath string) error {
-	sql, err := readMigration(filePath)
-	if err != nil {
-		return fmt.Errorf(`failed to read migration file "%s": %w`, filePath, err)
-	}
-
-	if err := Migrate(db, sql); err != nil {
-		return fmt.Errorf(`failed to apply migration file "%s": %w`, filePath, err)
 	}
 
 	return nil
@@ -305,15 +291,6 @@ func rename(db *DB, stmt *pg_query.RenameStmt) error {
 	}
 
 	return nil
-}
-
-func readMigration(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", fmt.Errorf(`failed to read file: %w`, err)
-	}
-
-	return string(data), nil
 }
 
 func omitDownMigration(m string) (string, error) {
