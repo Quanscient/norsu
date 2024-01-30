@@ -43,10 +43,20 @@ func Run(s Settings) error {
 	}
 
 	for _, q := range queries {
-		om := models[q.Out.Model]
+		if q.In != nil {
+			im := models[q.In.Model]
 
-		if err := match.DoesTablePopulateModel(*q.Out.Table, *om.Schema); err != nil {
-			return fmt.Errorf("in query %s: %w", q.Name, err)
+			if err := match.Input(*q.In, *im.Schema); err != nil {
+				return fmt.Errorf("query %s: %w", q.Name, err)
+			}
+		}
+
+		if q.Out != nil {
+			om := models[q.Out.Model]
+
+			if err := match.Output(*q.Out, *om.Schema); err != nil {
+				return fmt.Errorf("query %s: %w", q.Name, err)
+			}
 		}
 	}
 

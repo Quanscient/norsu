@@ -12,10 +12,8 @@ const (
 	matchTypeJson   matchType = "json"
 )
 
-// DoesTablePopulateModel checks recursively if `table` fully populates `schema`.
-// Returns a `MatchError` in case it doesn't.
-func DoesTablePopulateModel(table pg.Table, schema model.Schema) error {
-	if err := doesTablePopulateModel(matchTypeColumn, table, schema, &SchemaPath{}); err != nil {
+func Output(output pg.QueryOutput, schema model.Schema) error {
+	if err := doesTablePopulateModel(matchTypeColumn, *output.Table, schema, &SchemaPath{}); err != nil {
 		return err
 	}
 
