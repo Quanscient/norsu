@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -364,9 +365,9 @@ func genHandleError(g *jen.Group) {
 }
 
 func writeQueriesToFile(f *jen.File, cfg config.Config, workingDir string) error {
-	filePath := path.Join(workingDir, cfg.Package.Path) + ".go"
+	filePath := filepath.Join(workingDir, cfg.Package.Path, filepath.Base(cfg.Package.Path)+".go")
 
-	if err := os.MkdirAll(path.Dir(filePath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0700); err != nil {
 		return err
 	}
 
