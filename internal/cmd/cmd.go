@@ -91,10 +91,16 @@ func readModels(s Settings, cfg config.Config) (map[string]model.Model, error) {
 
 	modelsOut := make(map[string]model.Model)
 	for filePath, fileModels := range models {
-		pkgPath := openApiFiles[filePath].Package.Path
+		pkgCfg, ok := openApiFiles[filePath]
+		if !ok {
+			continue
+		}
+
+		pkgPath := pkgCfg.Package.Path
+		pkgName := path.Base(pkgCfg.Package.Path)
 
 		for name, m := range fileModels {
-			modelsOut[fmt.Sprintf("%s.%s", path.Base(pkgPath), name)] = model.Model{
+			modelsOut[fmt.Sprintf("%s.%s", pkgName, name)] = model.Model{
 				Name:    name,
 				Package: pkgPath,
 				Schema:  m,
