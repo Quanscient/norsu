@@ -32,11 +32,15 @@ type Column struct {
 type DataType struct {
 	Name    string
 	NotNull bool
-	IsArray bool
+	Array   bool
 	Schema  *string
+
 	// Record holds the nested record type in case of a record,
 	// json or jsonb type.
 	Record *Table
+	// RecordArray is true if there's and array of records instead
+	// of a single record.
+	RecordArray bool
 }
 
 func NewDB() *DB {
@@ -164,7 +168,10 @@ func (t *Table) String() string {
 
 func (t *Table) Clone() *Table {
 	clone := NewTable()
-	clone.Name = t.Name.Clone()
+
+	if t.Name != nil {
+		clone.Name = t.Name.Clone()
+	}
 
 	for _, c := range t.Columns {
 		clone.AddColumn(c.Clone())
@@ -207,6 +214,10 @@ func (d *DataType) writeString(s *stringBuilder) {
 
 	s.WriteString(d.Name)
 
+	if d.Array {
+		s.WriteString("[]")
+	}
+
 	if d.NotNull {
 		s.WriteString(" not null")
 	}
@@ -225,10 +236,11 @@ func (d *DataType) String() string {
 
 func (d *DataType) Clone() DataType {
 	clone := DataType{
-		Name:    d.Name,
-		NotNull: d.NotNull,
-		IsArray: d.IsArray,
-		Schema:  d.Schema,
+		Name:        d.Name,
+		NotNull:     d.NotNull,
+		Array:       d.Array,
+		Schema:      d.Schema,
+		RecordArray: d.RecordArray,
 	}
 
 	if d.Record != nil {
@@ -290,11 +302,6 @@ func (s *stringBuilder) WriteNewLine() {
 func (s *stringBuilder) WriteString(str string) {
 	s.checkNewline()
 	_, _ = s.Builder.WriteString(str)
-}
-
-func (s *stringBuilder) WriteByte(b byte) {
-	s.checkNewline()
-	_ = s.Builder.WriteByte(b)
 }
 
 func (s *stringBuilder) WriteRune(r rune) {

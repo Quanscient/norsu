@@ -143,6 +143,10 @@ func parseTypeName(typeName *pg_query.TypeName) (*DataType, error) {
 		return nil, fmt.Errorf("a surprising amount of names (%d) in a type name", len(names))
 	}
 
+	if len(typeName.GetArrayBounds()) > 0 {
+		t.Array = true
+	}
+
 	t.Name = strings.ToLower(t.Name)
 	if t.Schema != nil {
 		t.Schema = ptr.V(strings.ToLower(*t.Schema))

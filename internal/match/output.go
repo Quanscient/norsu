@@ -51,7 +51,7 @@ func doesTablePopulateModel(
 				return matchErrorf(schemaPath, `invalid selection type "%s" for an object output property %s`, column.Type.String(), schemaPath.GoString())
 			}
 
-			if column.Type.IsArray {
+			if column.Type.Record != nil && column.Type.RecordArray {
 				return matchErrorf(schemaPath, `array selected for object output property %s`, schemaPath.GoString())
 			}
 
@@ -63,11 +63,11 @@ func doesTablePopulateModel(
 		}
 
 		if p.Type == model.TypeArray {
-			if column.Type.Name != pg.DataTypeJson && column.Type.Name != pg.DataTypeJsonb {
+			if column.Type.Name != pg.DataTypeJson && column.Type.Name != pg.DataTypeJsonb && !column.Type.Array {
 				return matchErrorf(schemaPath, `invalid selection type "%s" for an array output property %s`, column.Type.String(), schemaPath.GoString())
 			}
 
-			if !column.Type.IsArray {
+			if column.Type.Record != nil && !column.Type.RecordArray {
 				return matchErrorf(schemaPath, `object selected for array output property %s`, schemaPath.GoString())
 			}
 

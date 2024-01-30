@@ -22,6 +22,7 @@ type Components struct {
 
 type Schema struct {
 	Type       string            `yaml:"type"`
+	Format     *string           `yaml:"format"`
 	Ref        *string           `yaml:"$ref"`
 	Properties map[string]Schema `yaml:"properties"`
 	Items      *Schema           `yaml:"items"`
@@ -61,6 +62,7 @@ func ReadModels(filePaths []AbsoluteFilePath) (map[AbsoluteFilePath]map[ModelNam
 
 func resolveFile(ctx *context, filePath AbsoluteFilePath) error {
 	if _, ok := ctx.Files[filePath]; ok {
+		// File already resolved or being resolved.
 		return nil
 	}
 
@@ -98,18 +100,27 @@ func resolveRootModel(
 	fileCtx := ctx.Files[filePath]
 
 	if m, ok := fileCtx.Models[name]; ok {
+		// Model already resolved or being resolved.
 		return m, nil
 	}
 
+	newModel := &model.Schema{}
+	fileCtx.Models[name] = newModel
+
 	schema := ctx.Files[filePath].File.Components.Schemas[name]
-	return resolveModel(ctx, schema, filePath, &name)
+	if m, err := resolveModel(ctx, schema, filePath); err != nil {
+		return nil, err
+	} else {
+		*newModel = *m
+	}
+
+	return newModel, nil
 }
 
 func resolveModel(
 	ctx *context,
 	schema Schema,
 	filePath AbsoluteFilePath,
-	name *ModelName,
 ) (*model.Schema, error) {
 	var mod *model.Schema
 
@@ -142,10 +153,6 @@ func resolveModel(
 				Type: *modelType,
 			}
 		}
-	}
-
-	if name != nil {
-		ctx.Files[filePath].Models[*name] = mod
 	}
 
 	return mod, nil
@@ -182,7 +189,7 @@ func resolveObject(ctx *context, schema Schema, filePath AbsoluteFilePath) (*mod
 	}
 
 	for pn, ps := range schema.Properties {
-		if pm, err := resolveModel(ctx, ps, filePath, nil); err != nil {
+		if pm, err := resolveModel(ctx, ps, filePath); err != nil {
 			return nil, err
 		} else {
 			pm.Nullable = !slices.Contains(schema.Required, pn)
@@ -194,7 +201,7 @@ func resolveObject(ctx *context, schema Schema, filePath AbsoluteFilePath) (*mod
 }
 
 func resolveArray(ctx *context, schema Schema, filePath AbsoluteFilePath) (*model.Schema, error) {
-	im, err := resolveModel(ctx, *schema.Items, filePath, nil)
+	im, err := resolveModel(ctx, *schema.Items, filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -214,14 +221,36 @@ func parseType(schema Schema) (*model.Type, error) {
 	case "array":
 		return ptr.V(model.TypeArray), nil
 	case "string":
+		if schema.Format != nil {
+			switch *schema.Format {
+			case "date-time":
+				return ptr.V(model.TypeTime), nil
+			}
+		}
 		return ptr.V(model.TypeString), nil
 	case "integer":
+		if schema.Format != nil {
+			switch *schema.Format {
+			case "int32":
+				return ptr.V(model.TypeInt32), nil
+			case "int64":
+				return ptr.V(model.TypeInt64), nil
+			}
+		}
 		return ptr.V(model.TypeInt), nil
 	case "boolean":
 		return ptr.V(model.TypeBool), nil
 	case "number":
+		if schema.Format != nil {
+			switch *schema.Format {
+			case "float32":
+				return ptr.V(model.TypeFloat32), nil
+			case "float64":
+				return ptr.V(model.TypeFloat64), nil
+			}
+		}
 		return ptr.V(model.TypeFloat64), nil
 	}
 
-	return nil, fmt.Errorf(`unsupported OpenAPI schema type "%s"`, schema.Type)
+	return ptr.V(model.TypeObject), nil
 }

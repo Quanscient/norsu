@@ -24,6 +24,8 @@ const (
 	funcJsonbToRecord    = "jsonb_to_record"
 	funcJsonToRecordSet  = "json_to_recordset"
 	funcJsonbToRecordSet = "jsonb_to_recordset"
+	funcJsonBuildObject  = "json_build_object"
+	funcJsonbBuildObject = "jsonb_build_object"
 
 	selectionStar = "*"
 )
@@ -127,12 +129,16 @@ func parseHeader(sql string, q *Query) error {
 		break
 	}
 
+	if len(q.Name) == 0 {
+		return errors.New("no valid header line was found")
+	}
+
 	return nil
 }
 
 func parseInputs(sql string, q *Query) (string, error) {
 	s := bufio.NewScanner(strings.NewReader(sql))
-	re := regexp.MustCompile(`[^:](:[\w\.]+)`)
+	paramRegex := regexp.MustCompile(`[^:](:[\w\.]+)`)
 
 	linesOut := make([]string, 0)
 	for s.Scan() {
@@ -143,7 +149,7 @@ func parseInputs(sql string, q *Query) (string, error) {
 			continue
 		}
 
-		line = re.ReplaceAllStringFunc(line, func(s string) string {
+		line = paramRegex.ReplaceAllStringFunc(line, func(s string) string {
 			prefix := s[0:1]
 			ref := s[2:]
 
@@ -448,6 +454,8 @@ func parseSelectionNode(ctx *QueryParseContext, node *pg_query.Node) (*selection
 		return parseCoalesceSelection(ctx, n.CoalesceExpr)
 	case *pg_query.Node_AConst:
 		return parseConstantSelection(ctx, n.AConst)
+	case *pg_query.Node_CaseExpr:
+		return parseCaseSelection(ctx, n.CaseExpr)
 	case *pg_query.Node_AExpr:
 		return nil, fmt.Errorf("expression selections need an explicit type cast")
 	}
@@ -514,10 +522,10 @@ func parseColumnRefSelectionOnePart(ctx *QueryParseContext, ref string) (*select
 				Column: &Column{
 					Name: ref,
 					Type: DataType{
-						Name:    DataTypeRecord,
-						NotNull: true,
-						IsArray: true,
-						Record:  table.Clone(),
+						Name:        DataTypeRecord,
+						NotNull:     true,
+						RecordArray: true,
+						Record:      table.Clone(),
 					},
 				},
 			}, nil
@@ -627,9 +635,15 @@ func parseFuncCallSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*s
 		} else {
 			return sel, nil
 		}
+	} else if funcName == funcJsonBuildObject || funcName == funcJsonbBuildObject {
+		if sel, err := parseJsonBuildObjectSelection(ctx, call); err != nil {
+			return nil, fmt.Errorf("failed to parse a %s selection: %w", funcName, err)
+		} else {
+			return sel, nil
+		}
 	}
 
-	return nil, fmt.Errorf(`failed to parse function "%s" call selection`, funcName)
+	return nil, fmt.Errorf(`failed to parse function "%s" selection`, funcName)
 }
 
 func parseJsonSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
@@ -655,24 +669,85 @@ func parseJsonSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selec
 		t = sel.Table
 	} else if sel.Column != nil && sel.Column.Type.Record != nil {
 		t = sel.Column.Type.Record
-	} else {
-		return nil, fmt.Errorf(`unsupported selection of type (%s), expected a table or record`, sel.String())
 	}
 
-	var isArray bool
-	if funcName == funcJsonAgg || funcName == funcJsonbAgg {
-		isArray = true
+	if t != nil {
+		var isArray bool
+		if funcName == funcJsonAgg || funcName == funcJsonbAgg {
+			isArray = true
+		}
+
+		return &selection{
+			Column: &Column{
+				Name: funcName,
+				Type: DataType{
+					Name:        dataType,
+					RecordArray: isArray,
+					Record:      t.Clone(),
+				},
+			},
+		}, nil
 	}
 
+	// Return an untyped json column by default.
 	return &selection{
 		Column: &Column{
 			Name: funcName,
 			Type: DataType{
-				Name:    dataType,
-				IsArray: isArray,
-				Record:  t.Clone(),
+				Name: dataType,
 			},
 		},
+	}, nil
+}
+
+func parseJsonBuildObjectSelection(ctx *QueryParseContext, call *pg_query.FuncCall) (*selection, error) {
+	funcName := getString(call.GetFuncname()[0])
+
+	dataType := DataTypeJson
+	if funcName == funcJsonbBuildObject {
+		dataType = DataTypeJsonb
+	}
+
+	t := NewTable()
+	c := &Column{
+		Name: funcName,
+		Type: DataType{
+			Name:    dataType,
+			NotNull: true,
+			Record:  t,
+		},
+	}
+
+	args := call.GetArgs()
+	if len(args)%2 != 0 {
+		return nil, fmt.Errorf("expected an even number of arguments, got %d", len(args))
+	}
+
+	for i := 0; i < len(call.GetArgs()); i += 2 {
+		keyArg := args[i]
+		valueArg := args[i+1]
+
+		if key := keyArg.GetAConst(); key != nil {
+			value, err := parseSelectionNode(ctx, valueArg)
+			if err != nil {
+				return nil, err
+			}
+
+			if value.Column != nil || len(value.Table.Columns) == 1 {
+				value.ForEachColumn(func(c *Column) {
+					c.Name = key.GetSval().GetSval()
+					t.AddColumn(c)
+				})
+			} else {
+				return nil, errors.New("records are not supported as property values")
+			}
+		} else {
+			return nil, fmt.Errorf(`only constant keys are supported, got "%+T"`, keyArg.GetNode())
+		}
+	}
+
+	return &selection{
+		Column: c,
 	}, nil
 }
 
@@ -715,6 +790,44 @@ func parseConstantSelection(ctx *QueryParseContext, expr *pg_query.A_Const) (*se
 		sel.Column.Type.Name = "text"
 	}
 
+	return sel, nil
+}
+
+func parseCaseSelection(ctx *QueryParseContext, expr *pg_query.CaseExpr) (*selection, error) {
+	cases := make([]*selection, 0)
+
+	for _, a := range expr.GetArgs() {
+		if sel, err := parseSelectionNode(ctx, a.GetCaseWhen().GetResult()); err != nil {
+			return nil, err
+		} else {
+			cases = append(cases, sel)
+		}
+	}
+
+	if sel, err := parseSelectionNode(ctx, expr.GetDefresult()); err != nil {
+		return nil, err
+	} else {
+		cases = append(cases, sel)
+	}
+
+	var dataType *DataType
+	for _, sel := range cases {
+		if sel.Column == nil {
+			return nil, errors.New("only single column selections are supported in a case expression")
+		}
+		if dataType == nil {
+			dataType = &sel.Column.Type
+		} else if dataType.Name != sel.Column.Type.Name {
+			return nil, errors.New("all cases in a case expression must have the same type")
+		}
+	}
+
+	sel := cases[0]
+	if sel.Column == nil {
+		return nil, errors.New("only single column selections are supported in a case expression")
+	}
+
+	sel.Column.Name = "case"
 	return sel, nil
 }
 
