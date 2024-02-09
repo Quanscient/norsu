@@ -6,6 +6,10 @@ import (
 	"path"
 	"path/filepath"
 
+	// Import here to keep it in the go.mod file. Only
+	// the generated code actually uses this package.
+	_ "github.com/lib/pq"
+
 	"github.com/koskimas/norsu/internal/config"
 	"github.com/koskimas/norsu/internal/gen"
 	"github.com/koskimas/norsu/internal/maps"

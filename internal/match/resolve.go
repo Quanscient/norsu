@@ -39,6 +39,7 @@ func resolve(schema *model.Schema, ref string, path *SchemaPath) error {
 				return resolve(p, ref[dot+1:], path)
 			} else {
 				path.Schema = p
+				path.ParentSchema = schema
 			}
 
 			return nil

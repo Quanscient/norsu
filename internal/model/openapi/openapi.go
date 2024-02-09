@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/koskimas/norsu/internal/model"
@@ -186,15 +185,19 @@ func resolveObject(ctx *context, schema Schema, filePath AbsoluteFilePath) (*mod
 	m := &model.Schema{
 		Type:       model.TypeObject,
 		Properties: make(map[string]*model.Schema, 0),
+		Required:   make(map[string]bool),
 	}
 
 	for pn, ps := range schema.Properties {
 		if pm, err := resolveModel(ctx, ps, filePath); err != nil {
 			return nil, err
 		} else {
-			pm.Nullable = !slices.Contains(schema.Required, pn)
 			m.Properties[pn] = pm
 		}
+	}
+
+	for _, r := range schema.Required {
+		m.Required[r] = true
 	}
 
 	return m, nil

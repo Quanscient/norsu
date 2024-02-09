@@ -7,8 +7,17 @@ import (
 )
 
 type SchemaPath struct {
-	Path   []string
-	Schema *model.Schema
+	Path         []string
+	Schema       *model.Schema
+	ParentSchema *model.Schema
+}
+
+func (p *SchemaPath) Nullable() bool {
+	return !p.ParentSchema.Required[p.LastPathPart()]
+}
+
+func (p *SchemaPath) LastPathPart() string {
+	return p.Path[len(p.Path)-1]
 }
 
 func (p *SchemaPath) GoString() string {

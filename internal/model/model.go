@@ -2,6 +2,10 @@ package model
 
 type Type string
 
+func (t Type) IsPrimitive() bool {
+	return t != TypeObject && t != TypeArray
+}
+
 const (
 	TypeBool    Type = "bool"
 	TypeString  Type = "string"
@@ -17,8 +21,8 @@ const (
 
 type Schema struct {
 	Type       Type
-	Nullable   bool
 	Properties map[string]*Schema
+	Required   map[string]bool
 	Items      *Schema
 }
 

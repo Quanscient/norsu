@@ -41,6 +41,7 @@ func doesTablePopulateModel(
 
 		schemaPath.Path = append(schemaPath.Path, pn)
 		schemaPath.Schema = p
+		schemaPath.ParentSchema = &schema
 
 		if column == nil {
 			return matchErrorf(schemaPath, `selection missing for output property %s`, schemaPath.GoString())
@@ -83,6 +84,7 @@ func doesTablePopulateModel(
 
 		schemaPath.Path = schemaPath.Path[:len(schemaPath.Path)-1]
 		schemaPath.Schema = nil
+		schemaPath.ParentSchema = nil
 	}
 
 	return nil

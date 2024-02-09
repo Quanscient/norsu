@@ -218,11 +218,11 @@ func genReadRows(g *jen.Group, q pg.Query, om model.Model) {
 }
 
 func genReadRowsLoopBody(g *jen.Group, q pg.Query, om model.Model) {
-	genQueryRowOutputVars(g, q, om)
+	genOutputRowVars(g, q, om)
 
 	g.If(
 		jen.Err().Op(":=").Id(idVarRows).Dot("Scan").CallFunc(func(g *jen.Group) {
-			genReadRowParams(g, q, om)
+			getScanParams(g, q, om)
 		}),
 		jen.Err().Op("!=").Nil(),
 	).Block(
@@ -238,11 +238,11 @@ func genReadRowsLoopBody(g *jen.Group, q pg.Query, om model.Model) {
 	)
 }
 
-func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
+func genOutputRowVars(g *jen.Group, q pg.Query, om model.Model) {
 	g.Var().Id(idVarRow).Id(q.Out.Model)
 	g.Empty()
-	didGen := false
 
+	didGen := false
 	for _, c := range q.Out.Table.Columns {
 		r, err := match.ResolveRef(om.Schema, c.Name)
 		if err != nil {
@@ -250,10 +250,11 @@ func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
 			continue
 		}
 
-		if isObjectOrArray(r.Schema) {
+		if isJson(*c) {
+			// Generate a RawBytes variable for each json output column.
 			g.Var().Id(getVarNameForOutputRef(r)).Qual("database/sql", "RawBytes")
 			didGen = true
-		} else if r.Schema.Nullable {
+		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
 			g.Var().Id(getVarNameForOutputRef(r)).Qual("database/sql", getSqlNullType(*r.Schema))
 			didGen = true
 		}
@@ -264,14 +265,28 @@ func genQueryRowOutputVars(g *jen.Group, q pg.Query, om model.Model) {
 	}
 }
 
-func genReadRowParams(g *jen.Group, q pg.Query, om model.Model) {
+func getScanParams(g *jen.Group, q pg.Query, om model.Model) {
 	for _, c := range q.Out.Table.Columns {
 		r, err := match.ResolveRef(om.Schema, c.Name)
-
 		if err != nil {
-			g.Op("&").Qual("database/sql", "NullString").Values()
-		} else if isObjectOrArray(r.Schema) || r.Schema.Nullable {
+			// Create an inline `sql.RawBytes` target for selections that don't
+			// exist in the target model.
+			g.Op("&").Qual("database/sql", "RawBytes").Values()
+			continue
+		}
+
+		if isJson(*c) {
 			g.Op("&").Id(getVarNameForOutputRef(r))
+		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
+			g.Op("&").Id(getVarNameForOutputRef(r))
+		} else if c.Type.Array {
+			var target *jen.Statement
+			if r.Nullable() {
+				target = jen.Id(idVarRow).Dot(r.GoString())
+			} else {
+				target = jen.Op("&").Id(idVarRow).Dot(r.GoString())
+			}
+			g.Qual("github.com/lib/pq", "Array").Call(target)
 		} else {
 			g.Op("&").Id(idVarRow).Dot(r.GoString())
 		}
@@ -286,7 +301,7 @@ func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 		}
 
 		outputVar := getVarNameForOutputRef(r)
-		if isObjectOrArray(r.Schema) {
+		if isJson(*c) {
 			g.Empty()
 			// Unmarshal objects and arrays into the row object.
 			g.If(jen.Id(outputVar).Op("!=").Nil()).BlockFunc(func(g *jen.Group) {
@@ -300,7 +315,7 @@ func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
 					jen.Return(jen.Nil(), jen.Err()),
 				)
 			})
-		} else if r.Schema.Nullable {
+		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
 			g.Empty()
 			g.If(jen.Id(outputVar).Dot("Valid")).BlockFunc(func(g *jen.Group) {
 				g.Id(idVarRow).Dot(r.GoString()).Op("=").Op("&").Id(outputVar).Dot(getSqlNullTypeProp(*r.Schema))
@@ -321,6 +336,8 @@ func getSqlNullTypeProp(schema model.Schema) string {
 		return "Int64"
 	case model.TypeInt32:
 		return "Int32"
+	case model.TypeFloat32, model.TypeFloat64:
+		return "Float64"
 	case model.TypeTime:
 		return "Time"
 	case model.TypeBool:
@@ -328,6 +345,10 @@ func getSqlNullTypeProp(schema model.Schema) string {
 	}
 
 	return "String"
+}
+
+func isJson(col pg.Column) bool {
+	return col.Type.Name == pg.DataTypeJson || col.Type.Name == pg.DataTypeJsonb
 }
 
 func isObjectOrArray(schema *model.Schema) bool {
