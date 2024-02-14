@@ -14,7 +14,7 @@ func Input(input pg.QueryInput, schema model.Schema) error {
 			return fmt.Errorf("query inputs: %w", err)
 		}
 
-		// TODO: Check input types once the query package can output them.
+		// TODO: Check input types once the pg package can output them.
 	}
 
 	return nil

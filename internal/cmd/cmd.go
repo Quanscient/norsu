@@ -6,9 +6,9 @@ import (
 	"path"
 	"path/filepath"
 
-	// Import here to keep it in the go.mod file. Only
-	// the generated code actually uses this package.
-	_ "github.com/lib/pq"
+	// Import here to keep this in the go.mod file. Only
+	// the generated code actually uses this packages.
+	_ "github.com/jackc/pgx/v5"
 
 	"github.com/koskimas/norsu/internal/config"
 	"github.com/koskimas/norsu/internal/gen"

@@ -66,18 +66,17 @@ type JoinedTable struct {
 
 func ParseQuery(db *DB, sql string) (*Query, error) {
 	var q Query
-
 	if err := parseHeader(sql, &q); err != nil {
 		return nil, err
 	}
 
-	if s, err := parseInputs(sql, &q); err != nil {
+	// Parametrize inputs so that postgres is able to parse the query.
+	if s, err := parametrizeInputs(sql, &q); err != nil {
 		return nil, err
 	} else {
 		sql = s
+		q.SQL = s
 	}
-
-	q.SQL = sql
 
 	ctx := &QueryParseContext{
 		DB:           db,
@@ -136,13 +135,15 @@ func parseHeader(sql string, q *Query) error {
 	return nil
 }
 
-func parseInputs(sql string, q *Query) (string, error) {
+// parametrizeInputs finds all inputs with format `:some_input` and replaces them
+// with postgres parameter placeholders $1, $2, etc.
+func parametrizeInputs(sql string, q *Query) (string, error) {
 	s := bufio.NewScanner(strings.NewReader(sql))
 	paramRegex := regexp.MustCompile(`[^:](:[\w\.]+)`)
 
 	linesOut := make([]string, 0)
 	for s.Scan() {
-		line := (s.Text())
+		line := s.Text()
 
 		if strings.HasPrefix(strings.TrimSpace(line), "--") {
 			linesOut = append(linesOut, line)
@@ -150,9 +151,13 @@ func parseInputs(sql string, q *Query) (string, error) {
 		}
 
 		line = paramRegex.ReplaceAllStringFunc(line, func(s string) string {
+			// Save the `[^:]` prefix. We need to add it back to the result.
 			prefix := s[0:1]
+
+			// Remove the `[^:]` and `:` chars from the match.
 			ref := s[2:]
 
+			// Check if the same input has already been encountered.
 			for _, in := range q.In.Inputs {
 				if in.Ref == ref {
 					return fmt.Sprintf("%s$%d", prefix, in.PlaceholderIndex)
@@ -516,7 +521,7 @@ func parseColumnRefSelectionOnePart(ctx *QueryParseContext, ref string) (*select
 			table := ctx.DB.TablesByName[jt.Table]
 
 			// If a table is selected using a table name, it results in a
-			// record selection. The record's underlyin type is the table's
+			// record selection. The record's underlying type is the table's
 			// type.
 			return &selection{
 				Column: &Column{
@@ -907,6 +912,13 @@ func parseDeleteStmt(ctx *QueryParseContext, stmt *pg_query.DeleteStmt) (*Table,
 	return parseTargetList(ctx, stmt.GetReturningList())
 }
 
+// CloneForSubquery creates a deep clone of the parse context to be used
+// in a subquery. The database and joined tables list are copied so that
+// the subquery can add its own tables from `FROM` and joins without them
+// being visible to the parent queries.
+//
+// `SubQueryDepth` of each joined table is also increased by one to keep
+// track how far up the table was joined.
 func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
 	clone := &QueryParseContext{
 		DB:           ctx.DB.Clone(),
