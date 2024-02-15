@@ -12,10 +12,6 @@ import (
 )
 
 const (
-	DataTypeJson   = "json"
-	DataTypeJsonb  = "jsonb"
-	DataTypeRecord = "record"
-
 	funcJsonAgg          = "json_agg"
 	funcJsonbAgg         = "jsonb_agg"
 	funcToJson           = "to_json"

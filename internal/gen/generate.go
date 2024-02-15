@@ -132,11 +132,9 @@ func genNewFunc(f *jen.File) {
 	f.Func().Id(idFuncNewQueries).Params(
 		jen.Id(idParamDb).Id(idInterfaceDb),
 	).Id(idInterfaceQueries).Block(
-		jen.Return(
-			jen.Op("&").Id(idStructQueries).Values(jen.Dict{
-				jen.Id(idPropDb): jen.Id(idParamDb),
-			}),
-		),
+		jen.Return(jen.Op("&").Id(idStructQueries).Values(jen.Dict{
+			jen.Id(idPropDb): jen.Id(idParamDb),
+		})),
 	).Empty()
 }
 
@@ -173,7 +171,7 @@ func genQueryBody(g *jen.Group, q pg.Query, im *model.Model, om *model.Model) {
 	}
 
 	genQueryExecute(g, q, im)
-	genReadRows(g, q, om)
+	genScanRows(g, q, om)
 
 	g.ReturnFunc(func(g *jen.Group) {
 		if om != nil {
@@ -200,19 +198,21 @@ func genQueryInputVars(g *jen.Group, q pg.Query, im model.Model) {
 }
 
 func genQueryExecute(g *jen.Group, q pg.Query, im *model.Model) {
-	g.List(
-		jen.Id(idVarRows),
-		jen.Err(),
-	).Op(":=").Id(idParamQueries).Dot(idPropDb).Dot("Query").CallFunc(func(g *jen.Group) {
-		genQueryInputsParams(g, q, im)
+	// Execute the query by calling the `Query` method on the `DB`.
+	g.List(jen.Id(idVarRows), jen.Err()).Op(":=").Id(idParamQueries).Dot(idPropDb).Dot("Query").CallFunc(func(g *jen.Group) {
+		genQueryInputParams(g, q, im)
 	})
-	genHandleError(g, im == nil)
-	g.Defer().Id(idVarRows).Dot("Close").Call()
-	g.Empty()
 
+	// Handle `Query` method error.
+	genHandleError(g, im == nil)
+
+	// Make sure the query result is eventually closed.
+	g.Defer().Id(idVarRows).Dot("Close").Call()
+
+	g.Empty()
 }
 
-func genQueryInputsParams(g *jen.Group, q pg.Query, im *model.Model) {
+func genQueryInputParams(g *jen.Group, q pg.Query, im *model.Model) {
 	g.Id(idParamCtx)
 	g.Id(getSqlConstName(q))
 
@@ -230,18 +230,20 @@ func genQueryInputsParams(g *jen.Group, q pg.Query, im *model.Model) {
 	}
 }
 
-func genReadRows(g *jen.Group, q pg.Query, om *model.Model) {
+func genScanRows(g *jen.Group, q pg.Query, om *model.Model) {
 	if om != nil {
+		// If the query has an output, create an array variable for the rows.
 		g.Var().Id(idVarOutput).Index().Id(q.Out.Model)
-	}
 
-	if om != nil {
+		// Loop over all rows in the result.
 		g.For(jen.Id(idVarRows).Dot("Next").Call()).BlockFunc(func(g *jen.Group) {
-			genReadRowsLoopBody(g, q, *om)
+			genScanLoopBody(g, q, *om)
 		})
 	}
 
 	g.Empty()
+
+	// Finally check for any errors that might have occurred during scanning.
 	g.If(jen.Err().Op(":=").Id(idVarRows).Dot("Err").Call(), jen.Err().Op("!=").Nil()).Block(
 		jen.ReturnFunc(func(g *jen.Group) {
 			if om != nil {
@@ -254,129 +256,39 @@ func genReadRows(g *jen.Group, q pg.Query, om *model.Model) {
 	g.Empty()
 }
 
-func genReadRowsLoopBody(g *jen.Group, q pg.Query, om model.Model) {
-	genOutputRowVars(g, q, om)
+func genScanLoopBody(g *jen.Group, q pg.Query, om model.Model) {
+	// Variable for the row.
+	g.Var().Id(idVarRow).Id(q.Out.Model)
+	g.Empty()
 
+	// Scan the row.
 	g.If(
 		jen.Err().Op(":=").Id(idVarRows).Dot("Scan").CallFunc(func(g *jen.Group) {
-			getScanParams(g, q, om)
+			genScanParams(g, q, om)
 		}),
 		jen.Err().Op("!=").Nil(),
 	).Block(
 		jen.Return(jen.Nil(), jen.Err()),
 	)
 
-	genAssignOutput(g, q, om)
-
 	g.Empty()
+	// Add the scanned row to the output.
 	g.Id(idVarOutput).Op("=").Id("append").Call(
 		jen.Id(idVarOutput),
 		jen.Id(idVarRow),
 	)
 }
 
-func genOutputRowVars(g *jen.Group, q pg.Query, om model.Model) {
-	g.Var().Id(idVarRow).Id(q.Out.Model)
-	g.Empty()
-
-	didGen := false
+func genScanParams(g *jen.Group, q pg.Query, om model.Model) {
+	// Loop over all root level selections.
 	for _, c := range q.Out.Table.Columns {
-		r, err := match.ResolveRef(om.Schema, c.Name)
-		if err != nil {
-			// Just ignore extra columns here.
-			continue
-		}
-
-		if isJson(*c) {
-			// Generate a json.RawMessage variable for each json output column.
-			g.Var().Id(getVarNameForOutputRef(r)).Qual("encoding/json", "RawMessage")
-			didGen = true
-		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
-			g.Var().Id(getVarNameForOutputRef(r)).Qual("database/sql", getSqlNullType(*r.Schema))
-			didGen = true
-		}
-	}
-
-	if didGen {
-		g.Empty()
-	}
-}
-
-func getScanParams(g *jen.Group, q pg.Query, om model.Model) {
-	for _, c := range q.Out.Table.Columns {
-		r, err := match.ResolveRef(om.Schema, c.Name)
-		if err != nil {
-			// Dump any unused selections into an ephemeral sql.NullString.
+		if r, err := match.ResolveRef(om.Schema, c.Name); err != nil {
+			// Dump any targetless selections into an ephemeral sql.NullString.
 			g.Op("&").Qual("database/sql", "NullString").Values()
-			continue
-		}
-
-		if isJson(*c) {
-			g.Op("&").Id(getVarNameForOutputRef(r))
-		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
-			g.Op("&").Id(getVarNameForOutputRef(r))
 		} else {
 			g.Op("&").Id(idVarRow).Dot(r.GoString())
 		}
 	}
-}
-
-func genAssignOutput(g *jen.Group, q pg.Query, om model.Model) {
-	for _, c := range q.Out.Table.Columns {
-		r, err := match.ResolveRef(om.Schema, c.Name)
-		if err != nil {
-			continue
-		}
-
-		outputVar := getVarNameForOutputRef(r)
-		if isJson(*c) {
-			g.Empty()
-			// Unmarshal objects and arrays into the row object.
-			g.If(jen.Id(outputVar).Op("!=").Nil()).BlockFunc(func(g *jen.Group) {
-				g.If(
-					jen.Err().Op(":=").Qual("encoding/json", "Unmarshal").Call(
-						jen.Id(outputVar),
-						jen.Op("&").Id(idVarRow).Dot(r.GoString()),
-					),
-					jen.Err().Op("!=").Nil(),
-				).Block(
-					jen.Return(jen.Nil(), jen.Err()),
-				)
-			})
-		} else if r.Nullable() && r.Schema.Type.IsPrimitive() {
-			g.Empty()
-			g.If(jen.Id(outputVar).Dot("Valid")).BlockFunc(func(g *jen.Group) {
-				g.Id(idVarRow).Dot(r.GoString()).Op("=").Op("&").Id(outputVar).Dot(getSqlNullTypeProp(*r.Schema))
-			})
-		}
-	}
-}
-
-func getSqlNullType(schema model.Schema) string {
-	return fmt.Sprintf("Null%s", getSqlNullTypeProp(schema))
-}
-
-func getSqlNullTypeProp(schema model.Schema) string {
-	switch schema.Type {
-	case model.TypeString:
-		return "String"
-	case model.TypeInt, model.TypeInt64:
-		return "Int64"
-	case model.TypeInt32:
-		return "Int32"
-	case model.TypeFloat32, model.TypeFloat64:
-		return "Float64"
-	case model.TypeTime:
-		return "Time"
-	case model.TypeBool:
-		return "Bool"
-	}
-
-	return "String"
-}
-
-func isJson(col pg.Column) bool {
-	return col.Type.Name == pg.DataTypeJson || col.Type.Name == pg.DataTypeJsonb
 }
 
 func isObjectOrArray(schema *model.Schema) bool {
@@ -385,10 +297,6 @@ func isObjectOrArray(schema *model.Schema) bool {
 
 func getVarNameForInputRef(r *match.SchemaPath) string {
 	return getVarNameForRef(r, idVarInputSuffix)
-}
-
-func getVarNameForOutputRef(r *match.SchemaPath) string {
-	return getVarNameForRef(r, idVarOutputSuffix)
 }
 
 func getVarNameForRef(r *match.SchemaPath, suffix string) string {

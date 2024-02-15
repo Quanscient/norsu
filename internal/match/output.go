@@ -48,7 +48,7 @@ func doesTablePopulateModel(
 		}
 
 		if p.Type == model.TypeObject {
-			if column.Type.Name != pg.DataTypeJson && column.Type.Name != pg.DataTypeJsonb {
+			if !column.Type.Json() {
 				return matchErrorf(schemaPath, `invalid selection type "%s" for an object output property %s`, column.Type.String(), schemaPath.GoString())
 			}
 
@@ -64,7 +64,7 @@ func doesTablePopulateModel(
 		}
 
 		if p.Type == model.TypeArray {
-			if column.Type.Name != pg.DataTypeJson && column.Type.Name != pg.DataTypeJsonb && !column.Type.Array {
+			if !column.Type.Json() && !column.Type.Array {
 				return matchErrorf(schemaPath, `invalid selection type "%s" for an array output property %s`, column.Type.String(), schemaPath.GoString())
 			}
 
