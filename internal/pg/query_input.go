@@ -20,6 +20,12 @@ type QueryInput struct {
 
 // parametrizeInputs finds all inputs with format `:some_input` and replaces them
 // with postgres parameter placeholders $1, $2, etc.
+//
+// This function also detects data types of inputs when postgres casts are used
+// (for example :some_input::INT). We could detect these casts in the AST parsing
+// phase but in order to find all inputs, we'd need to traverse the whole AST tree
+// which is difficult since the `pg_query` library doesn't come with a visitor
+// implementation.
 func parametrizeInputs(sql string, input *QueryInput) (string, error) {
 	s := bufio.NewScanner(strings.NewReader(sql))
 
@@ -34,22 +40,23 @@ func parametrizeInputs(sql string, input *QueryInput) (string, error) {
 
 		matches := paramRegex.FindAllStringSubmatchIndex(line, -1)
 		// Iterate over matches in reverse order so that we can replace them
-		// with parameter placeholders without having to update other matches'
-		// indexes.
+		// with parameter placeholders without having to update the indexes
+		// of other matches.
 		slices.Reverse(matches)
 
 		for _, m := range matches {
 			// First group is the reference.
 			ref := line[m[2]:m[3]]
 
-			// Third group is the data type of an optional cast.
 			var cast *string
+			var isArray bool
 			if m[6] != -1 {
+				// Third group is the data type of an optional cast.
 				cast = ptr.V(line[m[6]:m[7]])
-			}
 
-			// Fourth group is the array brackets if they exist.
-			isArray := m[8] != -1
+				// Fourth group is the array brackets if they exist.
+				isArray = m[8] != -1
+			}
 
 			var in *QueryInputValue
 			for i := range input.Inputs {
