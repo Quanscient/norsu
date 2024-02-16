@@ -1,12 +1,10 @@
 package pg
 
+// Column represents a table column or any named property
+// that has a type, such as a selection.
 type Column struct {
 	Name string
 	Type DataType
-}
-
-func (c *Column) HasName() bool {
-	return len(c.Name) > 0
 }
 
 func (c *Column) Clone() *Column {
@@ -17,11 +15,8 @@ func (c *Column) Clone() *Column {
 }
 
 func (c *Column) writeString(s *stringBuilder) {
-	if c.HasName() {
-		s.WriteString(c.Name)
-		s.WriteString(" ")
-	}
-
+	s.WriteString(c.Name)
+	s.WriteString(" ")
 	c.Type.writeString(s)
 }
 

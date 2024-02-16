@@ -6,14 +6,22 @@ import (
 	"github.com/koskimas/norsu/internal/ptr"
 )
 
+// Table represents a database table or an arbitrary set of named properties
+// such as selections.
 type Table struct {
+	// Name of the table if applicable. For example a set of selections doesn't
+	// have a name and this is nil.
 	Name          *TableName
 	Columns       []*Column
 	ColumnsByName map[string]*Column
 }
 
 type TableName struct {
-	Name   string
+	Name string
+	// Schema holds the schema of the table (as in "public" or "my_custom_schema").
+	// An empty value here means that a schema is not applicable or the schema is
+	// the default schema. This value is not a pointer so that we can use `TableName`
+	// as map key.
 	Schema string
 }
 

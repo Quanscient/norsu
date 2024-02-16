@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v5"
@@ -31,11 +30,6 @@ type Query struct {
 	SQL  string
 	In   *QueryInput
 	Out  *QueryOutput
-}
-
-type QueryInput struct {
-	Model  string
-	Inputs []QueryInputValue
 }
 
 type QueryInputValue struct {
@@ -67,7 +61,7 @@ func ParseQuery(db *DB, sql string) (*Query, error) {
 	}
 
 	// Parametrize inputs so that postgres is able to parse the query.
-	if s, err := parametrizeInputs(sql, &q); err != nil {
+	if s, err := parametrizeInputs(sql, q.In); err != nil {
 		return nil, err
 	} else {
 		sql = s
@@ -131,50 +125,6 @@ func parseHeader(sql string, q *Query) error {
 	return nil
 }
 
-// parametrizeInputs finds all inputs with format `:some_input` and replaces them
-// with postgres parameter placeholders $1, $2, etc.
-func parametrizeInputs(sql string, q *Query) (string, error) {
-	s := bufio.NewScanner(strings.NewReader(sql))
-	paramRegex := regexp.MustCompile(`[^:](:[\w\.]+)`)
-
-	linesOut := make([]string, 0)
-	for s.Scan() {
-		line := s.Text()
-
-		if strings.HasPrefix(strings.TrimSpace(line), "--") {
-			linesOut = append(linesOut, line)
-			continue
-		}
-
-		line = paramRegex.ReplaceAllStringFunc(line, func(s string) string {
-			// Save the `[^:]` prefix. We need to add it back to the result.
-			prefix := s[0:1]
-
-			// Remove the `[^:]` and `:` chars from the match.
-			ref := s[2:]
-
-			// Check if the same input has already been encountered.
-			for _, in := range q.In.Inputs {
-				if in.Ref == ref {
-					return fmt.Sprintf("%s$%d", prefix, in.PlaceholderIndex)
-				}
-			}
-
-			in := QueryInputValue{
-				Ref:              ref,
-				PlaceholderIndex: len(q.In.Inputs) + 1,
-			}
-
-			q.In.Inputs = append(q.In.Inputs, in)
-			return fmt.Sprintf("%s$%d", prefix, in.PlaceholderIndex)
-		})
-
-		linesOut = append(linesOut, line)
-	}
-
-	return strings.Join(linesOut, "\n"), nil
-}
-
 func handleParseError(sql string, err error) error {
 	var parseError *pg_parser.Error
 	if errors.As(err, &parseError) {
@@ -218,10 +168,10 @@ func parseSelectStmt(ctx *QueryParseContext, stmt *pg_query.SelectStmt) (*Table,
 		}
 	}
 
-	return parseTargetList(ctx, stmt.GetTargetList())
+	return parseSelections(ctx, stmt.GetTargetList())
 }
 
-func parseTargetList(ctx *QueryParseContext, targets []*pg_query.Node) (*Table, error) {
+func parseSelections(ctx *QueryParseContext, targets []*pg_query.Node) (*Table, error) {
 	table := NewTable()
 
 	for _, t := range targets {
@@ -434,7 +384,7 @@ func parseSelection(ctx *QueryParseContext, res *pg_query.ResTarget) (*selection
 		sel.Column.Name = res.GetName()
 	}
 
-	if sel.Column != nil && !sel.Column.HasName() {
+	if sel.Column != nil && len(sel.Column.Name) == 0 {
 		return nil, errors.New("failed to determine name for selection")
 	}
 
@@ -855,7 +805,7 @@ func parseInsertStmt(ctx *QueryParseContext, stmt *pg_query.InsertStmt) (*Table,
 		}
 	}
 
-	return parseTargetList(ctx, stmt.GetReturningList())
+	return parseSelections(ctx, stmt.GetReturningList())
 }
 
 func parseUpdateStmt(ctx *QueryParseContext, stmt *pg_query.UpdateStmt) (*Table, error) {
@@ -880,7 +830,7 @@ func parseUpdateStmt(ctx *QueryParseContext, stmt *pg_query.UpdateStmt) (*Table,
 		}
 	}
 
-	return parseTargetList(ctx, stmt.GetReturningList())
+	return parseSelections(ctx, stmt.GetReturningList())
 }
 
 func parseDeleteStmt(ctx *QueryParseContext, stmt *pg_query.DeleteStmt) (*Table, error) {
@@ -905,7 +855,7 @@ func parseDeleteStmt(ctx *QueryParseContext, stmt *pg_query.DeleteStmt) (*Table,
 		}
 	}
 
-	return parseTargetList(ctx, stmt.GetReturningList())
+	return parseSelections(ctx, stmt.GetReturningList())
 }
 
 // CloneForSubquery creates a deep clone of the parse context to be used

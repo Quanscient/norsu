@@ -185,15 +185,18 @@ func genQueryInputVars(g *jen.Group, q pg.Query, im model.Model) {
 	for _, in := range q.In.Inputs {
 		r, _ := match.ResolveRef(im.Schema, in.Ref)
 
-		if isObjectOrArray(r.Schema) {
-			// Marshal all object and array inputs into JSON. Create a local
-			// variable for each that we can later pass to the query.
-			g.List(jen.Id(getVarNameForInputRef(r)), jen.Err()).Op(":=").Qual("encoding/json", "Marshal").Call(
-				jen.Id(idParamInput).Dot(r.GoString()),
-			)
-			genHandleError(g, false)
-			g.Empty()
+		if !isObjectOrArray(r.Schema) || (in.Type != nil && !in.Type.Json()) {
+			continue
 		}
+
+		// Marshal all object and array inputs into JSON. Create a local
+		// variable for each that we can later pass to the query.
+		g.List(jen.Id(getVarNameForInputRef(r)), jen.Err()).Op(":=").Qual("encoding/json", "Marshal").Call(
+			jen.Id(idParamInput).Dot(r.GoString()),
+		)
+		genHandleError(g, false)
+		g.Empty()
+
 	}
 }
 
@@ -220,11 +223,11 @@ func genQueryInputParams(g *jen.Group, q pg.Query, im *model.Model) {
 		for _, in := range q.In.Inputs {
 			r, _ := match.ResolveRef(im.Schema, in.Ref)
 
-			if isObjectOrArray(r.Schema) {
+			if !isObjectOrArray(r.Schema) || (in.Type != nil && !in.Type.Json()) {
+				g.Id(idParamInput).Dot(r.GoString())
+			} else {
 				// We've created local variables for all object and array inputs.
 				g.Id(getVarNameForInputRef(r))
-			} else {
-				g.Id(idParamInput).Dot(r.GoString())
 			}
 		}
 	}
