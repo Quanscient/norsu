@@ -35,9 +35,9 @@ Norsu will read all your OpenAPI files and determine the schema of `sqlio.Id` an
 Then Norsu generates a simple function for you to call:
 
 ```go
-func (q *Queries) InsertPerson(
+func (q *Queries) FindPersons(
   ctx context.Context,
-  in person.NewPerson,
+  in sqlio.Id,
 ) ([]person.Person, error) {
   // ...
 }
