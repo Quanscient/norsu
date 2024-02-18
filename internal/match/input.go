@@ -14,17 +14,19 @@ func Input(input pg.QueryInput, schema model.Schema) error {
 			return fmt.Errorf("query inputs: %w", err)
 		}
 
-		if i.Type != nil && i.Type.Record != nil {
-			if r.Schema.Type == model.TypeArray {
+		if i.Type != nil && i.Type.Json() {
+			if r.Schema.Type == model.TypeArray && i.Type.RecordArray {
 				if err := doesTablePopulateModel(matchTypeJson, *i.Type.Record, *r.Schema.Items, &SchemaPath{}); err != nil {
+					// TODO: Better error
 					return fmt.Errorf("query inputs: %w", err)
 				}
-			} else if r.Schema.Type == model.TypeObject {
+			} else if r.Schema.Type == model.TypeObject && !i.Type.RecordArray {
 				if err := doesTablePopulateModel(matchTypeJson, *i.Type.Record, *r.Schema, &SchemaPath{}); err != nil {
+					// TODO: Better error
 					return fmt.Errorf("query inputs: %w", err)
 				}
 			} else {
-				// TODO
+				// TODO: Better error
 				return fmt.Errorf("%s FUCKED", r.GoString())
 			}
 		}

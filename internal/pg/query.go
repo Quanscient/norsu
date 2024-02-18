@@ -297,35 +297,60 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 		return err
 	}
 
-	// TODO: Extract to a separate function.
-	//
-	// Set the record type of the corresponding input in case the argument
-	// to the function is an input.
-	if len(fc.GetArgs()) == 1 && ctx.In != nil {
-		if p := fc.GetArgs()[0].GetParamRef(); p != nil {
-			for i := range ctx.In.Inputs {
-				in := &ctx.In.Inputs[i]
-
-				if in.Type == nil && in.PlaceholderIndex == int(p.GetNumber()) {
-					in.Type = &DataType{Record: t, NotNull: true}
-
-					if name == funcJsonToRecordSet || name == funcJsonbToRecordSet {
-						in.Type.RecordArray = true
-					}
-
-					if name == funcJsonbToRecord || name == funcJsonbToRecordSet {
-						in.Type.Name = DataTypeJsonb
-					} else {
-						in.Type.Name = DataTypeJson
-					}
-				}
-			}
+	if ctx.In != nil {
+		if err := tryParseInputTypeFromJsonToRecordFunction(ctx, fc, t); err != nil {
+			return err
 		}
 	}
 
 	t.Name = NewTableNamePtr(f.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
 	ctx.JoinedTables = prepend(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
+
+	return nil
+}
+
+func tryParseInputTypeFromJsonToRecordFunction(ctx *QueryParseContext, fc *pg_query.FuncCall, t *Table) error {
+	name, err := getFunctionName(fc)
+	if err != nil {
+		return err
+	}
+
+	if len(fc.Args) != 1 {
+		return fmt.Errorf("%s function should only have one argument", name)
+	}
+
+	p := fc.GetArgs()[0].GetParamRef()
+	if p == nil {
+		// Function argument is not a parameter reference. Nothing to do.
+		return nil
+	}
+
+	var in *QueryInputInfo
+	for i := range ctx.In.Inputs {
+		if ctx.In.Inputs[i].PlaceholderIndex == int(p.GetNumber()) {
+			in = &ctx.In.Inputs[i]
+			break
+		}
+	}
+
+	if in == nil {
+		return fmt.Errorf("failed to find input for parameter %d", p.GetNumber())
+	}
+
+	if in.Type == nil {
+		in.Type = &DataType{Record: t, NotNull: true}
+
+		if name == funcJsonToRecordSet || name == funcJsonbToRecordSet {
+			in.Type.RecordArray = true
+		}
+
+		if name == funcJsonbToRecord || name == funcJsonbToRecordSet {
+			in.Type.Name = DataTypeJsonb
+		} else {
+			in.Type.Name = DataTypeJson
+		}
+	}
 
 	return nil
 }
