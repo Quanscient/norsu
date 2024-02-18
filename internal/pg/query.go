@@ -28,14 +28,9 @@ const (
 type Query struct {
 	Name string
 	SQL  string
-	In   *QueryInput
-	Out  *QueryOutput
-}
 
-type QueryInputValue struct {
-	Ref              string
-	PlaceholderIndex int
-	Type             *DataType
+	In  *QueryInput
+	Out *QueryOutput
 }
 
 type QueryOutput struct {
@@ -46,6 +41,7 @@ type QueryOutput struct {
 type QueryParseContext struct {
 	DB           *DB
 	JoinedTables []JoinedTable
+	In           *QueryInput
 }
 
 type JoinedTable struct {
@@ -54,6 +50,8 @@ type JoinedTable struct {
 	SubQueryDepth int
 }
 
+// ParseQuery parses the query SQL using postgres source code (pg_query package)
+// and determines
 func ParseQuery(db *DB, sql string) (*Query, error) {
 	var q Query
 	if err := parseHeader(sql, &q); err != nil {
@@ -71,6 +69,7 @@ func ParseQuery(db *DB, sql string) (*Query, error) {
 	ctx := &QueryParseContext{
 		DB:           db,
 		JoinedTables: make([]JoinedTable, 0),
+		In:           q.In,
 	}
 
 	ast, err := parseSql(sql)
@@ -205,26 +204,16 @@ func addTableFromCTE(ctx *QueryParseContext, cte *pg_query.CommonTableExpr) erro
 func addTablesFromNode(ctx *QueryParseContext, node *pg_query.Node) error {
 	switch n := node.GetNode().(type) {
 	case *pg_query.Node_RangeVar:
-		if err := addTablesFromRangeVar(ctx, n.RangeVar); err != nil {
-			return err
-		}
+		return addTablesFromRangeVar(ctx, n.RangeVar)
 	case *pg_query.Node_JoinExpr:
-		if err := addTablesFromJoinExpr(ctx, n.JoinExpr); err != nil {
-			return err
-		}
+		return addTablesFromJoinExpr(ctx, n.JoinExpr)
 	case *pg_query.Node_RangeSubselect:
-		if err := addTablesFromSubSelect(ctx, n.RangeSubselect); err != nil {
-			return err
-		}
+		return addTablesFromSubSelect(ctx, n.RangeSubselect)
 	case *pg_query.Node_RangeFunction:
-		if err := addTablesFromFunction(ctx, n.RangeFunction); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf(`failed to add tables from expression of type "%+T"`, node.GetNode())
+		return addTablesFromFunction(ctx, n.RangeFunction)
 	}
 
-	return nil
+	return fmt.Errorf(`failed to add tables from expression of type "%+T"`, node.GetNode())
 }
 
 func addTablesFromRangeVar(ctx *QueryParseContext, r *pg_query.RangeVar) error {
@@ -281,7 +270,12 @@ func addTablesFromSubSelectWithSelectClause(ctx *QueryParseContext, subSelect *p
 }
 
 func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) error {
-	name, err := getRangeFunctionName(f)
+	fc, err := getRangeFunction(f)
+	if err != nil {
+		return err
+	}
+
+	name, err := getFunctionName(fc)
 	if err != nil {
 		return err
 	}
@@ -303,6 +297,32 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 		return err
 	}
 
+	// TODO: Extract to a separate function.
+	//
+	// Set the record type of the corresponding input in case the argument
+	// to the function is an input.
+	if len(fc.GetArgs()) == 1 && ctx.In != nil {
+		if p := fc.GetArgs()[0].GetParamRef(); p != nil {
+			for i := range ctx.In.Inputs {
+				in := &ctx.In.Inputs[i]
+
+				if in.Type == nil && in.PlaceholderIndex == int(p.GetNumber()) {
+					in.Type = &DataType{Record: t, NotNull: true}
+
+					if name == funcJsonToRecordSet || name == funcJsonbToRecordSet {
+						in.Type.RecordArray = true
+					}
+
+					if name == funcJsonbToRecord || name == funcJsonbToRecordSet {
+						in.Type.Name = DataTypeJsonb
+					} else {
+						in.Type.Name = DataTypeJson
+					}
+				}
+			}
+		}
+	}
+
 	t.Name = NewTableNamePtr(f.GetAlias().GetAliasname())
 	ctx.DB.AddTableToFront(t)
 	ctx.JoinedTables = prepend(ctx.JoinedTables, JoinedTable{Table: *t.Name, Alias: *t.Name})
@@ -310,24 +330,27 @@ func addTablesFromFunction(ctx *QueryParseContext, f *pg_query.RangeFunction) er
 	return nil
 }
 
-func getRangeFunctionName(rf *pg_query.RangeFunction) (string, error) {
+func getRangeFunction(rf *pg_query.RangeFunction) (*pg_query.FuncCall, error) {
 	if len(rf.GetFunctions()) != 1 {
-		return "", errors.New("failed to get range function name: wrong number of functions")
+		return nil, errors.New("failed to get range function: wrong number of functions")
 	}
 
 	f := rf.GetFunctions()[0]
 	if f.GetList() == nil || len(f.GetList().GetItems()) == 0 {
-		return "", errors.New("failed to get range function name: wrong list size")
+		return nil, errors.New("failed to get range function: wrong list size")
 	}
 
 	i := f.GetList().GetItems()[0]
 	if i.GetFuncCall() == nil {
-		return "", errors.New("failed to get range function name: no function call")
+		return nil, errors.New("failed to get range function: no function call")
 	}
 
-	fc := i.GetFuncCall()
+	return i.GetFuncCall(), nil
+}
+
+func getFunctionName(fc *pg_query.FuncCall) (string, error) {
 	if len(fc.GetFuncname()) != 1 {
-		return "", errors.New("failed to get range function name: more or less than one name part")
+		return "", errors.New("failed to get function name: more or less than one name part")
 	}
 
 	return strings.ToLower(getString(fc.GetFuncname()[0])), nil
@@ -408,7 +431,7 @@ func parseSelectionNode(ctx *QueryParseContext, node *pg_query.Node) (*selection
 	case *pg_query.Node_CaseExpr:
 		return parseCaseSelection(ctx, n.CaseExpr)
 	case *pg_query.Node_AExpr:
-		return nil, fmt.Errorf("expression selections need an explicit type cast")
+		return nil, fmt.Errorf("expression selections need an explicit type cast %s", n.AExpr.String())
 	}
 
 	return nil, fmt.Errorf(`unhandled selection "%+T"`, node.GetNode())
@@ -558,9 +581,12 @@ func parseSubQuerySelection(ctx *QueryParseContext, subLink *pg_query.SubLink) (
 }
 
 func parseTypeCastSelection(ctx *QueryParseContext, cast *pg_query.TypeCast) (*selection, error) {
-	sel, err := parseSelectionNode(ctx, cast.GetArg())
-	if err != nil {
-		return nil, err
+	var sel *selection
+	if s, err := parseSelectionNode(ctx, cast.GetArg()); err != nil {
+		// Could not parse the nested selection. Just create an empty selection
+		sel = &selection{Column: &Column{Name: "unknown"}}
+	} else {
+		sel = s
 	}
 
 	dataType, err := parseTypeName(cast.GetTypeName())
@@ -868,6 +894,7 @@ func parseDeleteStmt(ctx *QueryParseContext, stmt *pg_query.DeleteStmt) (*Table,
 func (ctx *QueryParseContext) CloneForSubquery() *QueryParseContext {
 	clone := &QueryParseContext{
 		DB:           ctx.DB.Clone(),
+		In:           ctx.In,
 		JoinedTables: make([]JoinedTable, 0, len(ctx.JoinedTables)),
 	}
 

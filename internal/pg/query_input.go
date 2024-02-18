@@ -14,15 +14,30 @@ import (
 var paramRegex = buildParamRegex()
 
 type QueryInput struct {
+	// Model holds the name of the input model with the package name.
+	// For example `api.Person`.
 	Model  string
-	Inputs []QueryInputValue
+	Inputs []QueryInputInfo
 }
 
-// parametrizeInputs finds all inputs with format `:some_input` and replaces them
-// with postgres parameter placeholders $1, $2, etc.
+type QueryInputInfo struct {
+	// Ref holds the reference as it was written in the SQL query.
+	// For example `someInput` or `someInput.someProp`.
+	Ref string
+
+	// PlaceholderIndex holds the 1-based index of the postgres parameter placeholder.
+	PlaceholderIndex int
+
+	// Type holds the parsed data type if the input. This can be nil if the input
+	// couldn't be determined.
+	Type *DataType
+}
+
+// parametrizeInputs finds all inputs with format `:someInput` using a regex
+// and replaces them with postgres parameter placeholders $1, $2, etc.
 //
 // This function also detects data types of inputs when postgres casts are used
-// (for example :some_input::INT). We could detect these casts in the AST parsing
+// (for example :someInput::INT). We could detect these casts in the AST parsing
 // phase but in order to find all inputs, we'd need to traverse the whole AST tree
 // which is difficult since the `pg_query` library doesn't come with a visitor
 // implementation.
@@ -53,12 +68,11 @@ func parametrizeInputs(sql string, input *QueryInput) (string, error) {
 			if m[6] != -1 {
 				// Third group is the data type of an optional cast.
 				cast = ptr.V(line[m[6]:m[7]])
-
 				// Fourth group is the array brackets if they exist.
 				isArray = m[8] != -1
 			}
 
-			var in *QueryInputValue
+			var in *QueryInputInfo
 			for i := range input.Inputs {
 				if input.Inputs[i].Ref == ref {
 					in = &input.Inputs[i]
@@ -67,7 +81,7 @@ func parametrizeInputs(sql string, input *QueryInput) (string, error) {
 			}
 
 			if in == nil {
-				input.Inputs = append(input.Inputs, QueryInputValue{
+				input.Inputs = append(input.Inputs, QueryInputInfo{
 					Ref:              ref,
 					PlaceholderIndex: len(input.Inputs) + 1,
 				})
@@ -102,6 +116,15 @@ func parametrizeInputs(sql string, input *QueryInput) (string, error) {
 	return strings.Join(linesOut, "\n"), nil
 }
 
+// buildParamRegex builds the regex used to parse query inputs from the SQL.
+//
+// :foo               --> ok
+// :foo.bar           --> ok
+// :foo.bar::INT      --> ok
+// :foo.bar.baz::int  --> ok
+// :foo::INT[]        --> ok
+// ::INT              --> fail
+// :foo::UNKNOWN_TYPE --> fail
 func buildParamRegex() *regexp.Regexp {
 	return regexp.MustCompile(fmt.Sprintf(`[^:]:([\w\.]+)(::((?i)%s)(\[\])?)?`, strings.Join(maps.Keys(DataTypes), "|")))
 }

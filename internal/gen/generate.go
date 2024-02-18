@@ -236,7 +236,7 @@ func genQueryInputParams(g *jen.Group, q pg.Query, im *model.Model) {
 func genScanRows(g *jen.Group, q pg.Query, om *model.Model) {
 	if om != nil {
 		// If the query has an output, create an array variable for the rows.
-		g.Var().Id(idVarOutput).Index().Id(q.Out.Model)
+		g.Id(idVarOutput).Op(":=").Id("make").Params(jen.Index().Id(q.Out.Model), jen.Lit(0))
 
 		// Loop over all rows in the result.
 		g.For(jen.Id(idVarRows).Dot("Next").Call()).BlockFunc(func(g *jen.Group) {
